@@ -90,7 +90,7 @@ public:
 			NULL
 		);
 		if (input == INVALID_HANDLE_VALUE) {
-			std::cout << "Couldn't open file " << reqs->inputFilename;
+			std::cerr << "Couldn't open file " << reqs->inputFilename;
 			exit(1);
 		}
 		inputFileSize = GetFileSize(input, NULL);
@@ -105,7 +105,7 @@ public:
 			NULL
 		);
 		if (output == INVALID_HANDLE_VALUE) {
-			std::cout << "Couldn't create output file " << reqs->inputFilename;
+			std::cerr << "Couldn't create output file " << reqs->inputFilename;
 			CloseHandle(input);
 			exit(1);
 		}
@@ -161,12 +161,12 @@ public:
   Streams(const ProcessRequirements* reqs, ChunkHelper& chunk){
     input = open(reqs->inputFilename, O_RDONLY);
     if(input == -1){
-			std::cout << "Couldn't open file " << reqs->inputFilename;
+			std::cerr << "Couldn't open file " << reqs->inputFilename;
       exit(1);
     }
     output = open(reqs->outputFilename, O_WRONLY | O_TRUNC | O_CREAT );
     if(output == -1){
-			std::cout << "Couldn't create output file " << reqs->outputFilename;
+			std::cerr << "Couldn't create output file " << reqs->outputFilename;
       close(input);
       exit(1);
     }
@@ -175,7 +175,7 @@ public:
       if(!fstat(input, &inputStats))
         inputFileSize = inputStats.st_size;
       else {
-        std::cout<<"Couldn't get size of \"" << reqs->inputFilename << "\"";
+        std::cerr<<"Couldn't get size of \"" << reqs->inputFilename << "\"";
         exit(1);
       }; 
     }
@@ -229,7 +229,7 @@ public:
 	Streams(const ProcessRequirements * reqs, ChunkHelper & chunk) {
 		input.open(reqs->inputFilename, std::ios::in | std::ios::binary);
 		if (input.fail()) {
-			std::cout << "Couldn't open file " << reqs->inputFilename;
+			std::cerr << "Couldn't open file " << reqs->inputFilename;
 			exit(1);
 		}
 
@@ -241,13 +241,13 @@ public:
 		output.open(reqs->outputFilename, std::ios::out | std::ios::binary);
 		if (output.fail()) {
 			input.close();
-			std::cout << "Couldn't start writing to file " << reqs->outputFilename;
+			std::cerr << "Couldn't start writing to file " << reqs->outputFilename;
 			exit(1);
 		}
 
 		if (inputFileSize == 0) {
 			input.close(), output.close();
-			std::cout << "Input file is empty";
+			std::cerr << "Input file is empty";
 			exit(0);
 		}
 		chunk.additionalBuffer = new char[

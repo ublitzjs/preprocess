@@ -40,7 +40,7 @@ namespace setup {
 		static void setOutdir(const char* argument) {
 			uint16_t length = strlen(argument);
 			if (length == outDirArgLength) {
-				std::cout << "Argument \"" << argument << "\" doesn't provide any value.\n";
+				std::cerr << "Argument \"" << argument << "\" doesn't provide any value.\n";
 				exit(1);
 			}
 			outdir = argument + outDirArgLength;
@@ -49,7 +49,7 @@ namespace setup {
 		/*static void setMaxCores(const char* argument) {
 			uint16_t length = strlen(argument);
 			if (length == maxCoresArgLength) {
-				std::cout << "Not full --max-cores argument";
+				std::cerr << "Not full --max-cores argument";
 				exit(1);
 			}
 			cores = std::stoi(std::string(argument).substr(length - 1));
@@ -64,7 +64,7 @@ namespace setup {
 		) {
 			uint8_t length = strlen(argument);
 			if (length == patternArgLength) {
-				std::cout << "Argument "<< argument << " has no value.\n";
+				std::cerr << "Argument "<< argument << " has no value.\n";
 				exit(1);
 			}
 			const char* argumentAdjacentPointer = argument;
@@ -77,14 +77,14 @@ namespace setup {
 				// --pattern-s=//:qwerty
 				|| *(argumentAdjacentPointer) == '/'
 			) {
-				std::cout << "Argument's \""<<argument << "\" regex part doesn't start from slash OR has 2 slashes in a row.\n";
+				std::cerr << "Argument's \""<<argument << "\" regex part doesn't start from slash OR has 2 slashes in a row.\n";
 				exit(1);
 			}
 			uint8_t regexLength;
 			{
 				const char* endRegexPointer = sz_find(argumentAdjacentPointer, length, "/:", 2);
 				if (!endRegexPointer) {
-					std::cout << "Argument's \""<<argument<<"\" regex part doesn't end with /: symbols.\n";
+					std::cerr << "Argument's \""<<argument<<"\" regex part doesn't end with /: symbols.\n";
 					exit(1);
 				}
 				regexLength = endRegexPointer - argumentAdjacentPointer;
@@ -94,7 +94,7 @@ namespace setup {
 			argumentAdjacentPointer += /*skip first slash*/ regexLength + 2 /*skip /: */;
 			length -= regexLength + 2;
 			if (!length) {
-				std::cout << "Argument \"" << argumentAdjacentPointer << "\" doesn't provide any pattern-text.\n";
+				std::cerr << "Argument \"" << argumentAdjacentPointer << "\" doesn't provide any pattern-text.\n";
 				exit(1);
 			}
 			char* preprocessorTxt = new char[length + 1];
@@ -105,7 +105,7 @@ namespace setup {
 		}
 		static void setAvoidRegex(const char* argument) {
 			if (strlen(argument) == avoidArgLength) {
-				std::cout << "argument --avoid has no value provided";
+				std::cerr << "argument --avoid has no value provided";
 				exit(1);
 			}
 			avoidRegex = argument + avoidArgLength;
@@ -114,7 +114,7 @@ namespace setup {
 			uint8_t length = strlen(argument);
 			if (isStartingPreprocessor) {
 				if (length == setStartPrepArgLength) {
-					std::cout << "argument " << setStartPrepArgSyntax << " has no value\n";
+					std::cerr << "argument " << setStartPrepArgSyntax << " has no value\n";
 					exit(1);
 				}
 				delete startPrep;
@@ -122,7 +122,7 @@ namespace setup {
 			}
 			else {
 				if (length == setEndPrepArgLength) {
-					std::cout << "argument " << setEndPrepArgSyntax << " has no value\n";
+					std::cerr << "argument " << setEndPrepArgSyntax << " has no value\n";
 					exit(1);
 				}
 				delete endPrep;
@@ -173,7 +173,7 @@ namespace setup {
 				// exclude "<|xxxx>" and "<xxxx|>
 				|| in_out_separator == 1 || in_out_separator == argument.size() - 2
 				) {
-				std::cout << "Argument \"" << argument << "\" is of wrong format";
+				std::cerr << "Argument \"" << argument << "\" is of wrong format";
 				exit(1);
 			}
 			bool userGaveOutput = in_out_separator != -1;
@@ -198,7 +198,7 @@ namespace setup {
 				// exclude "<|xxxx>" and "<xxxx|>
 				|| in_out_separator == 1 || in_out_separator == argument.size() - 2
 				) {
-				std::cout << "Argument \"" << argument << "\" is of wrong format";
+				std::cerr << "Argument \"" << argument << "\" is of wrong format";
 				exit(1);
 			}
 			bool userGaveOutput = in_out_separator != -1;
@@ -270,14 +270,14 @@ namespace setup {
 			//else if (!memcmp(argument, maxCoresArgSyntax, maxCoresArgLength)) build::setMaxCores(argument);
 
 			else {
-				std::cout << "Option \"" << argument << "\" can't be used OR can't be used BEFORE "
+				std::cerr << "Option \"" << argument << "\" can't be used OR can't be used BEFORE "
 					<< dirsStartFlagSyntax << " or " << filesStartFlagSyntax;
 				exit(1);
 			}
 		}
 
 		if (argI >= argc-1) {
-			std::cout << "You have to include a flag signifying the beginning of files/dirs (--files: / --dirs:) AND the files/dirs";
+			std::cerr << "You have to include a flag signifying the beginning of files/dirs (--files: / --dirs:) AND the files/dirs";
 			exit(1);
 		}
 
@@ -375,7 +375,7 @@ Use it for dynamic swagger specifications, logs to console, debugging imports an
 )";
 		return 0;
 	} else if (argc == 2) {
-		std::cout << "You should pass at least 2 arguments";
+		std::cerr << "You should pass at least 2 arguments";
 		return 1;
 	}
 
