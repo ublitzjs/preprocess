@@ -1,5 +1,0 @@
--std=c++17
--DPLATFORM_APPROACH=1
--I./stringzilla/include/
--I/usr/include/
-
