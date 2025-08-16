@@ -3,7 +3,8 @@ import {exec} from "node:child_process";
 import { existsSync } from "node:fs";
 import {arch, platform} from "node:os"
 import {argv} from "node:process";
-const wantedExe = "./"+platform()+"-"+arch()+".exe";
+const HERE = import.meta.dirname + "/"
+const wantedExe = HERE+platform()+"-"+arch()+".exe";
 if(!existsSync(wantedExe)) {
   console.log("Currently there is no "+wantedExe+" for your platform");
 } else {
