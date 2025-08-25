@@ -1,11 +1,9 @@
 #include <iostream>
 #include <cstring>
-#include <fstream>
-#include <string_view>
 #include <optional>
+#include <utility>
 #include <stdlib.h>
 #include <stdint.h>
-#include <thread>
 #include <string>
 #include <filesystem>
 #include <vector>
@@ -54,7 +52,7 @@ namespace setup {
 			}
 			cores = std::stoi(std::string(argument).substr(length - 1));
 		}*/
-		static void setMode(const char* changedMode) {
+		static inline void setMode(const char* changedMode) {
 			mode = changedMode;
 		}
 		static void addPreprocessorPattern(
