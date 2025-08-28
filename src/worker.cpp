@@ -163,7 +163,7 @@ public:
 			std::cerr << "Couldn't open file " << reqs->inputFilename;
       exit(1);
     }
-    output = open(reqs->outputFilename, O_WRONLY | O_TRUNC | O_CREAT );
+    output = open(reqs->outputFilename, O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if(output == -1){
 			std::cerr << "Couldn't create output file " << reqs->outputFilename;
       close(input);
@@ -185,7 +185,6 @@ public:
 		];
   }
   ~Streams(){
-    std::cout<<"Finishing: "<<input<<' '<<output<<'\n';
     close(input), close(output);
     globals::removingCode = false;
   }
