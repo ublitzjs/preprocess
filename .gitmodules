@@ -1,3 +1,6 @@
 [submodule "Stringzilla"]
 	path = Stringzilla
 	url = https://github.com/ashvardanian/Stringzilla.git
+[submodule "StringZilla"]
+	path = StringZilla
+	url = https://github.com/ashvardanian/StringZilla.git

@@ -1,9 +1,8 @@
 #include <iostream>
 #include <cstring>
 #include <stdint.h>
-#include <optional>
 #include <fstream>
-#include "./shared.h"
+#include "./shared.hpp"
 #include <stringzilla/stringzilla.hpp>
 
 #define copy memcpy

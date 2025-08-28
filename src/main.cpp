@@ -8,7 +8,7 @@
 #include <filesystem>
 #include <vector>
 #include <regex>
-#include "./shared.h"
+#include "./shared.hpp"
 #include <stringzilla/stringzilla.hpp>
 
 namespace fs = std::filesystem;
@@ -26,7 +26,7 @@ static const Preprocessor* endPrep = new Preprocessor{ "/*_END_DEV_*/", 13 - 1 }
 //static uint8_t cores = std::thread::hardware_concurrency() ? std::thread::hardware_concurrency() : 1;
 
 static std::vector<PreprocessorPattern> startPatterns, endPatterns;
-static std::vector<ProcessRequirements, std::allocator<ProcessRequirements>> allReqs;
+static std::vector<ProcessRequirements, std::allocator<ProcessRequirements>> allProcessRequirements;
 static std::optional<std::regex> avoidRegex = {};
 
 // always ends on slash. (or / or \ )
@@ -150,16 +150,16 @@ namespace setup {
 				if (entry.is_directory()) 
 					iterateDir(entry.path().string() + '/', skipDirStringChars, outDirString);
 				else {
-					char* startCstring = new char[entry.path().string().size() + 1];
-					memcpy(startCstring, entry.path().string().c_str(), entry.path().string().size() + 1);
+					char* inputCharPtr = new char[entry.path().string().size() + 1];
+					memcpy(inputCharPtr, entry.path().string().c_str(), entry.path().string().size() + 1);
 					std::string newOutPath = outDirString + (entry.path().string().c_str() + skipDirStringChars);
-					char* endCstring = new char[newOutPath.size() + 1];
-					memcpy(endCstring, newOutPath.c_str(), newOutPath.size() + 1);
-					const Preprocessor* startPreprocessor = fill_reqs::findPreprocessorUsingPattern(startCstring, startPatterns);
-					const Preprocessor* endPreprocessor = fill_reqs::findPreprocessorUsingPattern(startCstring, endPatterns);
+					char* outputCharPtr = new char[newOutPath.size() + 1];
+					memcpy(outputCharPtr, newOutPath.c_str(), newOutPath.size() + 1);
+					const Preprocessor* startPreprocessor = fill_reqs::findPreprocessorUsingPattern(inputCharPtr, startPatterns);
+					const Preprocessor* endPreprocessor = fill_reqs::findPreprocessorUsingPattern(inputCharPtr, endPatterns);
 					if (!startPreprocessor) startPreprocessor = startPrep;
 					if (!endPreprocessor) endPreprocessor = endPrep;
-					allReqs.emplace_back(startCstring, endCstring, startPreprocessor, endPreprocessor);
+					allProcessRequirements.emplace_back(inputCharPtr, outputCharPtr, startPreprocessor, endPreprocessor);
 				}
 			}
 		}
@@ -200,37 +200,33 @@ namespace setup {
 				exit(1);
 			}
 			bool userGaveOutput = in_out_separator != -1;
-			char* startCstring; char* endCstring;
+			char* inputCharPtr; char* outputCharPtr;
 			{
-				const std::string startString = argument.substr(
+				const std::string inputString = argument.substr(
 					1,
 					userGaveOutput ? in_out_separator - 1 : argument.size() - 2
 				);
 				std::cmatch matches;
-				if (avoidRegex.has_value() && std::regex_search(startString.c_str(), matches, avoidRegex.value())) return;
-				startCstring = new char[startString.size() + 1];
-				memcpy(startCstring, startString.c_str(), startString.size() + 1);
+				if (avoidRegex.has_value() && std::regex_search(inputString.c_str(), matches, avoidRegex.value())) return;
+				inputCharPtr = new char[inputString.size() + 1];
+				memcpy(inputCharPtr, inputString.c_str(), inputString.size() + 1);
 			}
-			const Preprocessor* startPreprocessor = fill_reqs::findPreprocessorUsingPattern(startCstring, startPatterns);
-			const Preprocessor* endPreprocessor = fill_reqs::findPreprocessorUsingPattern(startCstring, endPatterns);
+			const Preprocessor* startPreprocessor = fill_reqs::findPreprocessorUsingPattern(inputCharPtr, startPatterns);
+			const Preprocessor* endPreprocessor = fill_reqs::findPreprocessorUsingPattern(inputCharPtr, endPatterns);
 			if (!startPreprocessor) startPreprocessor = startPrep;
 			if (!endPreprocessor) endPreprocessor = endPrep;
 			if (userGaveOutput) {
-				const std::string startString = argument.substr(1, in_out_separator - 1);
-				const std::string endString = argument.substr(in_out_separator + 1, argument.size() - in_out_separator - 2);
-				memcpy(startCstring, startString.c_str(), startString.size() + 1);
-				endCstring = new char[endString.size() + 1];
-				memcpy(endCstring, endString.c_str(), endString.size() + 1);
+				const std::string outputString = argument.substr(in_out_separator + 1, argument.size() - in_out_separator - 2);
+				outputCharPtr = new char[outputString.size() + 1];
+				memcpy(outputCharPtr, outputString.c_str(), outputString.size() + 1);
 			}
 			else {
-				const std::string startString = argument.substr(1, argument.size() - 2);
-				memcpy(startCstring, startString.c_str(), startString.size() + 1);
-				fs::path filename = fs::path(startString).filename();
-				const std::string endString = outdir + filename.string();
-				endCstring = new char[endString.length() + 1];
-				memcpy(endCstring, endString.c_str(), endString.size() + 1);
+				fs::path filename = fs::path(inputCharPtr).filename();
+				const std::string outputString = outdir + filename.string();
+				outputCharPtr = new char[outputString.length() + 1];
+				memcpy(outputCharPtr, outputString.c_str(), outputString.size() + 1);
 			}
-			allReqs.emplace_back(startCstring, endCstring, startPreprocessor, endPreprocessor);
+			allProcessRequirements.emplace_back(inputCharPtr, outputCharPtr, startPreprocessor, endPreprocessor);
 		}
 	}
 	static void main(int argc, const char* const argv[]) {
@@ -379,12 +375,12 @@ Use it for dynamic swagger specifications, logs to console, debugging imports an
 
 	setup::main(argc, argv);
 
-	if (!allReqs.size()) {
+	if (!allProcessRequirements.size()) {
 		std::cout << "Seems like --avoid regex matches all files and neither could be processed\n";
 		return 0;
 	};
 
-	minifyFiles(allReqs);
+	minifyFiles(allProcessRequirements);
 
 	return 0;
 }

@@ -1,21 +1,28 @@
 import { argv, exit } from "node:process";
+import { basename } from "node:path";
 import console from "node:console";
-/**
- *  @type {{
-      input:string
-      output:string
-      startPreprocessor
-   }[]}
- * */
+import { readdirSync } from "node:fs"
+import { ProcessRequirements } from "./shared.mjs";
+class PreprocessorPattern {
+  regexp;
+  preprocessor;
+  constructor(regexp, preprocessor){
+    this.regexp = regexp;
+    this.preprocessor = preprocessor;
+  }
+}
+/**@type {ProcessRequirements[]}*/
 var allReqs = [];
+/**@type {PreprocessorPattern[]}*/
 var startPatterns = [],
+/**@type {PreprocessorPattern[]}*/
   endPatterns = [],
   startPrep = "/*_START_DEV_*/",
   endPrep = "/*_END_DEV_*/"
 /**
- * @type {Regexp}
+ * @type {RegExp}
  * */
-avoidRegex;
+var avoidRegex;
 
 var mode = "files"
 
@@ -84,7 +91,7 @@ var setup = {
       }
       avoidRegex = new RegExp(argument.slice(7));
     },
-    addPreprocessorPattern(argument, patterns) {
+    addPreprocessorPattern(argument, /**@type {PreprocessorPattern[]}*/patterns) {
       if (argument.length == 13) {
         console.error("argument " + argument + " has no value\n")
         exit(1);
@@ -107,11 +114,11 @@ var setup = {
         console.error("Argument \"" + argument + "\" doesn't provide any pattern-text")
         exit(1);
       }
-      patterns.push({ regex, txt: argumentAdjacentCopy });
+      patterns.push(new PreprocessorPattern(regex, argumentAdjacentCopy));
     }
   },
   fill_reqs: {
-    fromFiles(argument) {
+    fromFiles(/**@type {string}*/argument) {
       var in_out_separator = argument.search('|');
       if (
         argument[0] != '<' || argument[argument.length - 1] != '>'
@@ -121,18 +128,32 @@ var setup = {
         exit(1);
       }
       var userGaveOutput = in_out_separator != -1;
-      var dirString = argument.slice(1, userGaveOutput ? in_out_separator - 1 : argument.length - 2);
-      var endsWithSlash = /[/\\]/;
-      if (!endsWithSlash.test(dirString.at(-1))) dirString += '/';
-      var outDirString = outdir;
-      if(userGaveOutput){
-        let currentOutDirString = argument.slice(in_out_separator + 1, argument.length - in_out_separator - 2);
-        if(!endsWithSlash.test(currentOutDirString.at(-1))) currentOutDirString += '/';
-        outDirString = currentOutDirString;
-      }
+      var inputString = argument.slice(1, userGaveOutput ? in_out_separator - 1 : argument.length - 2);
+      if(avoidRegex && avoidRegex.test(inputString)) return;
+      const startPreprocessor = setup.fill_reqs.findPreprocessorUsingPattern(inputString, startPatterns) || startPrep;
+      const endPreprocessor = setup.fill_reqs.findPreprocessorUsingPattern(inputString, endPatterns) || endPrep;
+      var outputString = userGaveOutput 
+        ? argument.slice(in_out_separator + 1, argument.length - in_out_separator - 2)
+        : outdir + basename(inputString);
+      allReqs.push(new ProcessRequirements(inputString, outputString, startPreprocessor, endPreprocessor));
     },
-    fromDir(argument) {
-
+    /**
+     *@returns {string | null} preprocessor if found or null
+     * */
+    findPreprocessorUsingPattern(filename, /**@type {PreprocessorPattern[]}*/patterns){
+      for(var pattern of patterns) 
+        if(pattern.regexp.test(filename)) return pattern.preprocessor;
+      return null;
+    },
+    iterateDir(dirString, skipDirStringChars, outDirString){
+      for(var entry of readdirSync(dirString, {withFileTypes:true})){
+        if(avoidRegex && avoidRegex.test(entry.name)) continue;
+        if(entry.isDirectory())
+          setup.fill_reqs.iterateDir(entry.name + '/', skipDirStringChars, outDirString)
+        else {
+           
+        }
+      }
     }
   }
 }
