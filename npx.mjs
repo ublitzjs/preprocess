@@ -1,16 +1,2 @@
 #!/usr/bin/env node
-import {exec} from "node:child_process";
-import { existsSync } from "node:fs";
-import {arch, platform} from "node:os"
-import {argv} from "node:process";
-const HERE = import.meta.dirname + "/"
-const wantedExe = HERE+platform()+"-"+arch()+".exe";
-if(!existsSync(wantedExe)) {
-  console.log("Currently there is no "+wantedExe+" for your platform");
-} else {
-  argv.splice(0,2);
-  exec(wantedExe + " " + argv.map((arg)=>"\""+arg+"\"").join(" "), (err,stdout, stderr)=>{
-    if(err) console.error("Exe error:\n",stderr);
-    else console.log("Exe success:\n", stdout);
-  });
-}
+import{execSync as i}from"node:child_process";import{existsSync as o}from"node:fs";import{log as t}from"node:console";import{arch as n,platform as a}from"node:os";import{argv as r}from"node:process";var l=import.meta.dirname+"/",e=l+a()+"-"+n()+".bin";r.splice(0,2);o(e)?t(i(e+" "+r.map(s=>'"'+s+'"').join(" ")).toString()):t("Currently there is no "+e+" for your platform");
