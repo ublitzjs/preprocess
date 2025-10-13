@@ -1,386 +1,209 @@
-#include <iostream>
-#include <cstring>
-#include <optional>
-#include <utility>
 #include <stdlib.h>
 #include <stdint.h>
-#include <string>
-#include <filesystem>
+#include <algorithm>
+#include <future>
 #include <vector>
 #include <regex>
-#include "./shared.hpp"
+#include <thread>
+#include "./include/os.hpp"
+#include "./include/shared.hpp"
 #include <stringzilla/stringzilla.hpp>
+#include <napi.h>
 
-namespace fs = std::filesystem;
+std::vector<PatternStruct>* patterns = new std::vector<PatternStruct>();
+uint32_t maxChunkSize = 1024*64;
 
-struct PreprocessorPattern {
-	std::regex regexp;
-	Preprocessor* preprocessor;
-	PreprocessorPattern(std::regex regexp, Preprocessor* preprocessor)
-		: regexp(regexp), preprocessor(preprocessor){}
+class JSStream : public BaseStream {
+private: 
+  Napi::Array queue;
+  Napi::Env jsEnv;
+public:
+  JSStream(const PatternStruct* patternStr, const std::string inputPath, Napi::ThreadSafeFunction tsfn, Napi::Env env) 
+    : BaseStream(patternStr, inputPath, tsfn), queue(std::move(Napi::Array::New(env))), jsEnv(env) {}
+  void flushChunks() override {
+    std::promise<void> promise;
+    auto waiter = promise.get_future();
+    Napi::Array& queueVar = queue;
+    tsfn.BlockingCall(&"", [queueVar, &promise](Napi::Env env, Napi::Function jsCallback, const void*){
+      Napi::Function doneFn = Napi::Function::New(env, [
+          promiseWhenDone = std::move(promise)
+      ](const Napi::CallbackInfo& info) mutable {
+          promiseWhenDone.set_value();
+          return info.Env().Undefined();
+      });
+      jsCallback.Call({ queueVar, doneFn });
+    });
+    waiter.wait();
+    queue = Napi::Array::New(jsEnv);
+  }
+  inline void write(const char* source, uint32_t size) override {
+    queue.Set(
+      queue.Length(),
+      Napi::ArrayBuffer::New(jsEnv, (void*) source, size)
+    );
+  }
+  inline void insert(char* keyword, uint8_t size) override {
+    write(keyword, size);
+  }
+};
+class FSStream : public BaseStream {
+private:
+  std::vector<LightBuffer<const char*>> queue;
+  Napi::Object filling;
+  int output;
+public:
+  
+  FSStream(const PatternStruct* patternStr, const std::string inputPath, Napi::ThreadSafeFunction tsfn, const std::string outputPath, Napi::Object fillingParam) 
+    : BaseStream(patternStr, inputPath, tsfn), filling(fillingParam) {
+      queue.reserve(3);
+    output = open(outputPath.c_str(), O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    //if(output == -1){
+		//	std::cerr << "Couldn't create output file " <<  outputPath;
+    //  close(input);
+    //  exit(1);
+    //}
+  }
+
+  void flushChunks() override {
+    for(LightBuffer<const char*> buffer: queue){
+      ::write(output, buffer.source, buffer.length);
+      //if(::write(output, source, size) == -1) {
+		  //	printf("Error: unable to write to file.");
+		  //	close(input),close(output);
+		  //	exit(1);
+      //};
+    }
+    queue.clear();
+    tsfn.BlockingCall(&"", [](Napi::Env, Napi::Function jsCallback, const void*){
+      jsCallback.Call({});
+    });
+  }
+  inline void write(const char* source, uint32_t size) override {
+    queue.emplace_back(source, size);
+  }
+  inline void insert(char* keyword, uint8_t size) override {
+    Napi::Value data = filling.Get(keyword);
+    if(data.IsString()) {
+      const std::string& string = data.As<Napi::String>().Utf8Value();
+      write(string.c_str(), string.size());
+    } else if(data.IsArrayBuffer()) {
+      Napi::ArrayBuffer buffer = data.As<Napi::ArrayBuffer>();
+      write(static_cast<char*>(buffer.Data()), buffer.ByteLength());
+    } /*TODO error if ELSE*/
+  }
 };
 
-static const Preprocessor* startPrep = new Preprocessor{ "/*_START_DEV_*/", 15 - 1 };
-static const Preprocessor* endPrep = new Preprocessor{ "/*_END_DEV_*/", 13 - 1 };
+namespace exports {
+  /**
+   *  Each file has different name, and depending on its name module uses different symbols
+   * */
+  void addPattern(const Napi::CallbackInfo &info) {
+    Napi::Env env = info.Env();
+    Napi::Object params = info[0].As<Napi::Object>();
+    const std::string& prefix = params.Get("prefix").As<Napi::String>().Utf8Value();
+    const std::string& insertOn = params.Get("insertOn").As<Napi::String>().Utf8Value();
+    const std::string& removeOn = params.Get("removeOn").As<Napi::String>().Utf8Value();
+    const std::string& end = params.Get("end").As<Napi::String>().Utf8Value();
+    const uint8_t maxParamLength = std::max({ insertOn.length(), removeOn.length() });
+    const uint8_t maxSyntaxPartialsSizeVar = std::max<int16_t>({
+        static_cast<uint8_t>(params.Get("maxInsertKeyLength").As<Napi::Number>().Int32Value() + end.size()),
+        static_cast<uint8_t>(prefix.size() + maxParamLength),
+    });
+    patterns->emplace_back(
+        std::regex(params.Get("pattern").As<Napi::String>().Utf8Value()),
+        prefix,
+        insertOn,
+        removeOn,
+        end,
+        maxParamLength,
+        maxSyntaxPartialsSizeVar
+    );
+  }
+  /*
+   * This function takes either path to a file, or templates
+   * */
+  void streamToFS(const Napi::CallbackInfo& info) {
+    const PatternStruct* patternStruct = nullptr;
+    Napi::String input = info[0].As<Napi::String>();
+    for(const PatternStruct& patternStr : *patterns){
+      std::cmatch matches;
+      if(std::regex_search(
+        input.Utf8Value().c_str(),
+        matches,
+        patternStr.pattern
+      )){
+        patternStruct = &patternStr;
+        break;
+      }
+    }
+    Napi::ThreadSafeFunction tsfn = Napi::ThreadSafeFunction::New(
+        info.Env(),
+        info[3].As<Napi::Function>(),
+        "JSStreaming_Worker",
+        0,
+        1
+    );
+    std::thread(
+      [
+        input
+      ](){
+        std::cout<<"Hello\n\n\n\nHello\n\n\n";
+      }
+      //Worker,
+      //[
+      //  patternStruct,
+      //  tsfn,
+      //  in = input.Utf8Value(),
+      //  out = info[1].As<Napi::String>().Utf8Value(),
+      //  params = info[2].As<Napi::Object>()
+      //]()->BaseStream*{
+      //  FSStream* streams = new FSStream(patternStruct, input.Utf8Value().c_str(), tsfn, out.Utf8Value().c_str(), params);
+      //  return streams;
+      //}
+    ).detach();
+  }  
+  void streamToJS(const Napi::CallbackInfo& info) {
+    const PatternStruct* patternStruct = nullptr;
 
-//static uint8_t cores = std::thread::hardware_concurrency() ? std::thread::hardware_concurrency() : 1;
-
-static std::vector<PreprocessorPattern> startPatterns, endPatterns;
-static std::vector<ProcessRequirements, std::allocator<ProcessRequirements>> allProcessRequirements;
-static std::optional<std::regex> avoidRegex = {};
-
-// always ends on slash. (or / or \ )
-static std::string outdir = "./";
-static std::string mode = "files"; 
-
-namespace setup {
-	namespace build {
-		static void setOutdir(const char* argument) {
-			uint16_t length = strlen(argument);
-			if (length == outDirArgLength) {
-				std::cerr << "Argument \"" << argument << "\" doesn't provide any value.\n";
-				exit(1);
-			}
-			outdir = argument + outDirArgLength;
-			if (argument[length - 1] != '/') outdir+='/';
-		}
-		/*static void setMaxCores(const char* argument) {
-			uint16_t length = strlen(argument);
-			if (length == maxCoresArgLength) {
-				std::cerr << "Not full --max-cores argument";
-				exit(1);
-			}
-			cores = std::stoi(std::string(argument).substr(length - 1));
-		}*/
-		static inline void setMode(const char* changedMode) {
-			mode = changedMode;
-		}
-		static void addPreprocessorPattern(
-			const char* argument, 
-			uint8_t patternArgLength, 
-			std::vector<PreprocessorPattern>& currentPreprocessorPatterns
-		) {
-			uint8_t length = strlen(argument);
-			if (length == patternArgLength) {
-				std::cerr << "Argument "<< argument << " has no value.\n";
-				exit(1);
-			}
-			const char* argumentAdjacentPointer = argument;
-			argumentAdjacentPointer += patternArgLength + 1;
-			length -= patternArgLength + 1;
-
-			if(
-				// --pattern-s=qwerty
-				*(argumentAdjacentPointer - 1) != '/'
-				// --pattern-s=//:qwerty
-				|| *(argumentAdjacentPointer) == '/'
-			) {
-				std::cerr << "Argument's \""<<argument << "\" regex part doesn't start from slash OR has 2 slashes in a row.\n";
-				exit(1);
-			}
-			uint8_t regexLength;
-			{
-				const char* endRegexPointer = sz_find(argumentAdjacentPointer, length, "/:", 2);
-				if (!endRegexPointer) {
-					std::cerr << "Argument's \""<<argument<<"\" regex part doesn't end with /: symbols.\n";
-					exit(1);
-				}
-				regexLength = endRegexPointer - argumentAdjacentPointer;
-			}
-
-			std::regex regexp(std::string(argumentAdjacentPointer, regexLength));
-			argumentAdjacentPointer += /*skip first slash*/ regexLength + 2 /*skip /: */;
-			length -= regexLength + 2;
-			if (!length) {
-				std::cerr << "Argument \"" << argumentAdjacentPointer << "\" doesn't provide any pattern-text.\n";
-				exit(1);
-			}
-			char* preprocessorTxt = new char[length + 1];
-			preprocessorTxt[length] = '\0';
-			memcpy(preprocessorTxt, argumentAdjacentPointer, length);
-			Preprocessor* preprocessor = new Preprocessor{ preprocessorTxt, static_cast<uint8_t>(length - 1) };
-			currentPreprocessorPatterns.emplace_back(regexp, preprocessor);
-		}
-		static void setAvoidRegex(const char* argument) {
-			if (strlen(argument) == avoidArgLength) {
-				std::cerr << "argument --avoid has no value provided";
-				exit(1);
-			}
-			avoidRegex = argument + avoidArgLength;
-		}
-		static void setDefaultPreprocessor(const char* argument, bool isStartingPreprocessor) {
-			uint8_t length = strlen(argument);
-			if (isStartingPreprocessor) {
-				if (length == setStartPrepArgLength) {
-					std::cerr << "argument " << setStartPrepArgSyntax << " has no value\n";
-					exit(1);
-				}
-				delete startPrep;
-				startPrep = new Preprocessor{ argument + setStartPrepArgLength, static_cast<uint8_t>(length - setStartPrepArgLength - 1) };
-			}
-			else {
-				if (length == setEndPrepArgLength) {
-					std::cerr << "argument " << setEndPrepArgSyntax << " has no value\n";
-					exit(1);
-				}
-				delete endPrep;
-				endPrep = new Preprocessor{ argument + setEndPrepArgLength, static_cast<uint8_t>(length - setEndPrepArgLength - 1) };
-			}
-		}
-	}
-	namespace fill_reqs {
-		static const Preprocessor* findPreprocessorUsingPattern(const char* filename, std::vector<PreprocessorPattern>& patterns){
-			for (PreprocessorPattern& pattern : patterns) {
-				std::cmatch matches;
-				if (std::regex_search(filename, matches, pattern.regexp))
-					return pattern.preprocessor;
-			}
-			return nullptr;
-		}
-		static void iterateDir(std::string&& dirString, uint8_t skipDirStringChars, std::string& outDirString) {
-			for (const fs::directory_entry& entry : fs::directory_iterator{ dirString }) {
-				if (avoidRegex.has_value()) {
-					std::cmatch matches;
-					if (std::regex_search(
-						entry.path().string().c_str(),
-						matches,
-						avoidRegex.value()
-					)) continue;
-				}
-				if (entry.is_directory()) 
-					iterateDir(entry.path().string() + '/', skipDirStringChars, outDirString);
-				else {
-					char* inputCharPtr = new char[entry.path().string().size() + 1];
-					memcpy(inputCharPtr, entry.path().string().c_str(), entry.path().string().size() + 1);
-					std::string newOutPath = outDirString + (entry.path().string().c_str() + skipDirStringChars);
-					char* outputCharPtr = new char[newOutPath.size() + 1];
-					memcpy(outputCharPtr, newOutPath.c_str(), newOutPath.size() + 1);
-					const Preprocessor* startPreprocessor = fill_reqs::findPreprocessorUsingPattern(inputCharPtr, startPatterns);
-					const Preprocessor* endPreprocessor = fill_reqs::findPreprocessorUsingPattern(inputCharPtr, endPatterns);
-					if (!startPreprocessor) startPreprocessor = startPrep;
-					if (!endPreprocessor) endPreprocessor = endPrep;
-					allProcessRequirements.emplace_back(inputCharPtr, outputCharPtr, startPreprocessor, endPreprocessor);
-				}
-			}
-		}
-		static void fromDir(std::string argument) {
-			int16_t in_out_separator = argument.find('|');
-			if (
-				// has to be this:  "<filename.txt>" or "<filename.txt|out.txt>"
-				argument[0] != '<' || argument[argument.size() - 1] != '>'
-				// exclude "<|xxxx>" and "<xxxx|>
-				|| in_out_separator == 1 || in_out_separator == argument.size() - 2
-				) {
-				std::cerr << "Argument \"" << argument << "\" is of wrong format";
-				exit(1);
-			}
-			bool userGaveOutput = in_out_separator != -1;
-
-			std::string dirString = argument.substr(1, userGaveOutput ? in_out_separator - 1 : argument.size() - 2);
-			if (dirString[dirString.size() - 1] != '/' && dirString[dirString.size() - 1] != '\\') dirString += '/';
-			std::string outDirString = outdir;
-			if (userGaveOutput)	{
-				std::string currentOutDirString = argument.substr(in_out_separator + 1, argument.size() - in_out_separator - 2);
-				if (currentOutDirString[currentOutDirString.size() - 1] != '/' || currentOutDirString[currentOutDirString.size() - 1] != '\\')
-					currentOutDirString += '/';
-				outDirString = currentOutDirString;
-			}
-
-			iterateDir(std::move(dirString), dirString.size(), outDirString);
-		}
-		static void fromFiles(std::string argument) {
-			int16_t in_out_separator = argument.find('|');
-			if (
-				// has to be this:  "<filename.txt>" or "<filename.txt|out.txt>"
-				argument[0] != '<' || argument[argument.size() - 1] != '>'
-				// exclude "<|xxxx>" and "<xxxx|>
-				|| in_out_separator == 1 || in_out_separator == argument.size() - 2
-				) {
-				std::cerr << "Argument \"" << argument << "\" is of wrong format";
-				exit(1);
-			}
-			bool userGaveOutput = in_out_separator != -1;
-			char* inputCharPtr; char* outputCharPtr;
-			{
-				const std::string inputString = argument.substr(
-					1,
-					userGaveOutput ? in_out_separator - 1 : argument.size() - 2
-				);
-				std::cmatch matches;
-				if (avoidRegex.has_value() && std::regex_search(inputString.c_str(), matches, avoidRegex.value())) return;
-				inputCharPtr = new char[inputString.size() + 1];
-				memcpy(inputCharPtr, inputString.c_str(), inputString.size() + 1);
-			}
-			const Preprocessor* startPreprocessor = fill_reqs::findPreprocessorUsingPattern(inputCharPtr, startPatterns);
-			const Preprocessor* endPreprocessor = fill_reqs::findPreprocessorUsingPattern(inputCharPtr, endPatterns);
-			if (!startPreprocessor) startPreprocessor = startPrep;
-			if (!endPreprocessor) endPreprocessor = endPrep;
-			if (userGaveOutput) {
-				const std::string outputString = argument.substr(in_out_separator + 1, argument.size() - in_out_separator - 2);
-				outputCharPtr = new char[outputString.size() + 1];
-				memcpy(outputCharPtr, outputString.c_str(), outputString.size() + 1);
-			}
-			else {
-				fs::path filename = fs::path(inputCharPtr).filename();
-				const std::string outputString = outdir + filename.string();
-				outputCharPtr = new char[outputString.length() + 1];
-				memcpy(outputCharPtr, outputString.c_str(), outputString.size() + 1);
-			}
-			allProcessRequirements.emplace_back(inputCharPtr, outputCharPtr, startPreprocessor, endPreprocessor);
-		}
-	}
-	static void main(int argc, const char* const argv[]) {
-		Timer timer("setup function");
-		uint32_t argI = 0;
-
-#define is_equal !memcmp
-
-		// check everything BEFORE files
-		while(++argI < argc) {
-			const char* argument = argv[argI];
-			// --outdir=
-			if (is_equal(argument, outDirArgSyntax, outDirArgLength)) build::setOutdir(argument);
-
-			// --files: --dirs:
-			else if (is_equal(argument, filesStartFlagSyntax, filesStartFlagLength)) break;
-			else if (is_equal(argument, dirsStartFlagSyntax, dirsStartFlagLength)) {
-				build::setMode(dirsMode);
-				break;
-			}
-
-			// --pattern-s=/regex/:PATTERN
-			else if (is_equal(argument, startPatternArgSyntax, startPatternArgLength))
-				build::addPreprocessorPattern(argument, startPatternArgLength, startPatterns);
-			else if (is_equal(argument, endPatternArgSyntax, endPatternArgLength))
-				build::addPreprocessorPattern(argument, endPatternArgLength, endPatterns);
-
-			// --avoid=
-			else if (is_equal(argument, avoidArgSyntax, avoidArgLength)) build::setAvoidRegex(argument);
-
-			// --default-s=
-			else if (is_equal(argument, setStartPrepArgSyntax, setStartPrepArgLength)) build::setDefaultPreprocessor(argument, true);
-			else if (is_equal(argument, setEndPrepArgSyntax, setEndPrepArgLength)) build::setDefaultPreprocessor(argument, false);
-
-			//else if (!memcmp(argument, maxCoresArgSyntax, maxCoresArgLength)) build::setMaxCores(argument);
-
-			else {
-				std::cerr << "Option \"" << argument << "\" can't be used OR can't be used BEFORE "
-					<< dirsStartFlagSyntax << " or " << filesStartFlagSyntax;
-				exit(1);
-			}
-		}
-
-		if (argI >= argc-1) {
-			std::cerr << "You have to include a flag signifying the beginning of files/dirs (--files: / --dirs:) AND the files/dirs";
-			exit(1);
-		}
-
-		// check FILES or DIRS
-		if (mode == dirsMode)  while (++argI < argc) fill_reqs::fromDir(argv[argI]);
-		else while (++argI < argc) fill_reqs::fromFiles(argv[argI]);
-	}
+    for(const PatternStruct& patternStr : *patterns){
+      std::cmatch matches;
+      if(std::regex_search(
+        info[0].As<Napi::String>().Utf8Value().c_str(),
+        matches,
+        patternStr.pattern
+      )){
+        patternStruct = &patternStr;
+        break;
+      }
+    }
+    Napi::Env env = info.Env();
+    Napi::ThreadSafeFunction tsfn = Napi::ThreadSafeFunction::New(
+        env,
+        info[1].As<Napi::Function>(),
+        "JSStreaming_Worker",
+        0,
+        1
+    );
+    
+    std::thread(
+      Worker,
+      [patternStruct, env, tsfn, in = info[0].As<Napi::String>().Utf8Value().c_str()]()->BaseStream*{
+        JSStream* streams = new JSStream(patternStruct, in, tsfn, env);
+        return streams;
+      }
+    ).detach();
+  }
+  void setMaxChunk(const Napi::CallbackInfo& info){
+    maxChunkSize = info[0].As<Napi::Number>().Int32Value();
+  }
 }
 
-
-/*2)				
-	.exe
-	"--outdir=D://hello world"
-	--dirs: 
-	"<C://dev-folder>"
-*/
-
-#define CLI_WORKS 1
-
-int main(
-#if CLI_WORKS
-	 int argc, const char* const argv[]
-#endif 
-) {
-#if !CLI_WORKS
-	int argc = 6;
-	const char* const argv[6] = { ".exe","--pattern-s=/2/:MY START ", "--outdir=./", "--pattern-e=/2/:MY END", "--dirs:",  "<x64/Release/samples|here>" };
-#endif
-
-	if (argc == 1) {
-		std::cout << R"(
-This is an executable for removing unwanted code from production.
-Just like macro in C++, but only "#if 0". 
-In your target file you mark some part with a "starting phrase" and "ending phrase", 
-which you can manually specify. This exe removes these phrases and everything in between.
-Use it for dynamic swagger specifications, logs to console, debugging imports and more.
-1) Arguments
-1.1) Order: setting flags -> flag singnifying targets -> targets;
-  !setting flags are optional
-1.2) Setting flags:
-  
-  1.2.1) --outdir=PATH
-  All targets with unspecified output next to them will use PATH for outputs.
-  PATH can be absolute and relative.
-  Default - ./  (current working directory)
-  Example: --outdir=../almost-dist
-  
-  1.2.2) --avoid=REGEXP
-  If some targets match the REGEXP (don't give slashes) - they 
-  won't be processed
-  Example: --avoid=.git|.dockerignore|.conf
-  
-  1.2.3) --default-s=START_PHRASE
-  IF you don't give it, /*_START_DEV_*/ will be used
-  Example for python target: "--default-s=#START DEV"
-  
-  1.2.4) --default-e=END_PHRASE
-  This exe used /*_END_DEV_*/ by its default
-  Example for lua: "--default-e=--finish of development"
-
-  1.2.5) --pattern-s=/FILE_REGEXP/:START_PHRASE
-  If target matches FILE_REGEXP between slashes, then it will use 
-  START_PHRASE instead of the default one.
-  This option can be used several times.
-  Example: --pattern-s=/.py/:#START_DEV
-  
-  1.2.6) --pattern-e=/FILE_REGEXP/:END_PHRASE
-  Same as for start phrase.
-  Example: "--pattern-e=/.ts/:/*My own end*/"
-
-1.3) flags before targets AND targets
-  1.3.1) --files:
-  This means that from now on you will give ONLY files to process.
-  Target files (relative or absolute) must be passed between "<>" signs.
-  
-  Example 1: --outdir=./almost-dist --files: <input.txt>
-  In this example "input.txt" will become "almost-dist/input.txt"
-  If you don't give --outdir, this example would try to create 
-  another input.txt in ./ directory, resulting in an error.
-  
-  But you can give it your own output name using | sign
-  Example 2: --files: "<input.txt|output.txt>"
-  This overrides --outdir
-
-  You can feed this exe with many files
-  Example 3: --outdir=./dist --files: <one.txt> <D://two.txt> <three.txt|D://out.txt> 
-
-  1.3.2) --dirs:
-  This instructs exe to recursively process directories.
-  Format and use cases are the same as of files.
-
-  Example 1: --dirs: <input-dir> <dir2|outdir> 
-
-2) For full examples go to github page
-)";
-		return 0;
-	} else if (argc == 2) {
-		std::cerr << "You should pass at least 2 arguments";
-		return 1;
-	}
-
-	setup::main(argc, argv);
-
-	if (!allProcessRequirements.size()) {
-		std::cout << "Seems like --avoid regex matches all files and neither could be processed\n";
-		return 0;
-	};
-
-	minifyFiles(allProcessRequirements);
-
-	return 0;
+Napi::Object Init(Napi::Env env, Napi::Object info){
+  info.Set("addPattern", Napi::Function::New(env, exports::addPattern));
+  info.Set("setMaxChunk", Napi::Function::New(env, exports::setMaxChunk));
+  info.Set("streamToFS", Napi::Function::New(env, exports::streamToFS));
+  info.Set("streamToJS", Napi::Function::New(env, exports::streamToJS));
+  return info;
 }
+
+NODE_API_MODULE(addon, Init);

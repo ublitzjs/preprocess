@@ -1,5 +1,15 @@
 {
+  "scripts":{
+    "build": "node-gyp build"
+  },
   "devDependencies": {
     "esbuild": "^0.25.9"
+  },
+  "dependencies": {
+    "@types/node": "^24.5.2",
+    "node-addon-api": "^8.5.0",
+    "node-gyp": "^11.4.2",
+    "tsx": "^4.20.6",
+    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.52.0"
   }
 }
