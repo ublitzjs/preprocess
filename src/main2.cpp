@@ -1,3 +1,4 @@
+#include <iostream>
 #include <thread>
 #include <napi.h>
 #include <map>
@@ -40,7 +41,7 @@ namespace exports {
     const std::string templateName = info[0].As<Napi::String>().Utf8Value();
     bool cacheIsTmp = info[1].As<Napi::Boolean>().Value();
     caches::dataStruct* cachePointer;
-    bool* pendingReady = nullptr;
+    std::atomic<bool>* pendingReady = nullptr;
     {
       std::lock_guard<std::mutex> lock(caches::dataMapMutex);
       if(caches::dataMap.count(templateName)){
@@ -52,20 +53,39 @@ namespace exports {
           cache.busyLevel++;
         }
 
-        if(cache.isReady){
+        if(cache.isReady.load()){
           return Napi::Boolean::New(info.Env(), false);
         }
         pendingReady = &cache.isReady;
       } else {
-        auto [keyValuePair, boolean] = caches::dataMap.emplace(templateName, caches::dataStruct());
+        auto [keyValuePair, boolean] = caches::dataMap.emplace(
+            std::piecewise_construct,
+            std::forward_as_tuple(templateName.c_str()),
+            std::forward_as_tuple()
+        );
         cachePointer = &keyValuePair->second;
         keyValuePair->second.MarkAsCachedInMap(&keyValuePair->first);
       }
     }
     Napi::Function jsCallback = info[2].As<Napi::Function>();
     if(pendingReady){
-      caches::dataStruct::waitUntilReady(pendingReady);
-      jsCallback.Call({});
+      std::thread([
+          pendingReady,
+          tsfn = Napi::ThreadSafeFunction::New(
+            info.Env(),
+            jsCallback,
+            "waiting for caching to succeed",
+            0,
+            1
+          )
+        ](){
+          caches::dataStruct::waitUntilReady(pendingReady);
+          tsfn.BlockingCall([](Napi::Env env, Napi::Function jsCB){
+            jsCB.Call({});
+          });
+          tsfn.Release();
+        }
+      ).detach();
       return Napi::Boolean::New(info.Env(), false);
     }
     syntax::dataStruct* syntaxStruct = syntax::findMatchingStruct(templateName);

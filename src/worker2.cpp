@@ -1,4 +1,5 @@
 #include "./include/os.hpp"
+#include <iostream>
 #include <uv.h>
 #include "./include/shared2.hpp"
 void libuvWorker::Finalize(uv_work_t*, int){}
@@ -43,10 +44,10 @@ void libuvWorker::JSCachingThreadPool(
           std::string templateName,
           Napi::ThreadSafeFunction tsfn
       ){
-        libuvWorker::dataStruct workerData = libuvWorker::dataStruct(tmp, cacheFullFile, syntaxStruct, cacheDummy, templateName); 
-        std::future<libuvWorker::Statuses> await = workerData.sync.get_future();
-        workerData.uv_request.data = &workerData;
-        libuvWorker::QueueWork(&workerData.uv_request);
+        libuvWorker::dataStruct *workerData = new libuvWorker::dataStruct(tmp, cacheFullFile, syntaxStruct, cacheDummy, templateName); 
+        std::future<libuvWorker::Statuses> await = workerData->sync.get_future();
+        workerData->uv_request.data = workerData;
+        libuvWorker::QueueWork(&workerData->uv_request);
         await.wait();
         uint8_t status = await.get();
         tsfn.BlockingCall([status, templateName](

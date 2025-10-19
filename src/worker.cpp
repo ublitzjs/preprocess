@@ -256,9 +256,7 @@ BaseStream::~BaseStream() {
   close(input);
   delete[] chunk_initialPointer;
   delete[] syntaxPartials;
-  tsfn.BlockingCall(
-    static_cast<void*>(nullptr),
-    [](Napi::Env env, Napi::Function jsCallback, const void *) {
+  tsfn.BlockingCall([](Napi::Env env, Napi::Function jsCallback) {
       jsCallback.Call({env.Null(), env.Undefined()});
     }
   );

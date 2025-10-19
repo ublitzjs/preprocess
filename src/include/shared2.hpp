@@ -73,10 +73,10 @@ namespace caches {
     // when someone called "cache" and set that tmp is "non-temp", it means that developer WILL clear it with clearCache MANUALLY and busyLevel+=1 (just not to disappear before time comes). 
     uint16_t busyLevel = 0;
     // dataStruct is created without any info when calling "cache". This flag changes when caching is complete. This ensures that calling "cache" when data is not initialized will fail. To wait for initialisation "std::atomic_ref<bool>::wait" is preferred.
-    bool isReady = false;
+    std::atomic<bool> isReady;
     bool tmp = true;
     // it creates a dummy. caches::dataMap needs to have a sign that file is BEING cached right now. When it finishes caching - waitUntilReady
-    dataStruct(): pointer(nullptr), filename(nullptr), mainChunkSize(0), syntaxPartialsSize(0) {};
+    dataStruct(): pointer(nullptr), filename(nullptr), mainChunkSize(0), syntaxPartialsSize(0), isReady(false) {};
     inline bool isCachedInMap() const noexcept {
       return filename;
     }
@@ -90,11 +90,11 @@ namespace caches {
       *const_cast<uint8_t*>(&syntaxPartialsSize) = syntaxPartialsSizeParam;
       *const_cast<uint32_t*>(&mainChunkSize) = mainChunkSizeParam;
       if(!tmp) tmp = tmpParam; // Lifetime of a cache must NOT be descresed without "clearCache". Template is temporary by default. If someone initialized it (here - in a race condition) as a "true" value, then he/she must have a reason to extend its lifetime AND ia taking responsibility to clear it, when time comes.
-      isReady = true;
+      isReady.store(true, std::memory_order_relaxed);
+      isReady.notify_all();
     }
-    static inline void waitUntilReady(bool* pendingReady){
-      std::atomic_ref<bool> ref(*pendingReady);
-      ref.wait(false, std::memory_order_relaxed);
+    static inline void waitUntilReady(std::atomic<bool>* pendingReady){
+      pendingReady->wait(false, std::memory_order_relaxed);
     }
 
     ~dataStruct(){
