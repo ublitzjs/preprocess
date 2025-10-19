@@ -2,7 +2,7 @@
   "targets": [
     {
       "target_name": "addon",
-      "sources": [ "src/main2.cpp" ],
+      "sources": [ "src/main2.cpp", "src/worker2.cpp" ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"
       ],
@@ -10,7 +10,7 @@
          "<!(node -p \"require('node-addon-api').gyp\")"
        ],
        "cflags!": [ "-fno-exceptions" ],
-       "cflags_cc!": [ "-fno-exceptions" ],
+       "cflags_cc!": [ "-fno-exceptions", "--std=c++20" ],
        "defines": [ "NAPI_CPP_EXCEPTIONS" ],
       "conditions": [
         ["OS=='win'", {

@@ -2,13 +2,12 @@ import {createRequire} from "node:module";
 var require = createRequire(import.meta.url);
  
 type FSStreamParams = {
-  name: string;
+  id: number,
   keys: Record<string, string | FSStreamParams[]>
 }
 type JSStreamParams = {
-  name: string;
   id: number;
-  other?: Record<string, JSStreamParams[]>;
+  keys?: Record<string, JSStreamParams[]>;
 }
 type JSStreamCb = (
   (data: (ArrayBuffer|[number, string][]), release: ()=>void, error: undefined)=>void
@@ -16,8 +15,8 @@ type JSStreamCb = (
   (data: undefined, release: undefined, error: Error|undefined)=>void
 )
 export var addon: {
-  streamToFS(params: FSStreamParams, output:string, callback: ()=>void): void;
-  streamToJS(params: JSStreamParams, callback: JSStreamCb): void;
+  streamToFS(params: FSStreamParams, templates: string[], output:string, callback: ()=>void): void;
+  streamToJS(params: JSStreamParams, templaets: string[], callback: JSStreamCb): void;
   setSyntax(pattern: string, params: {
     prefix: string;
     insertOn: string;
