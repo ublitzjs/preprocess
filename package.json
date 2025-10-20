@@ -1,5 +1,5 @@
 {
-  "scripts":{
+  "scripts": {
     "build": "node-gyp build"
   },
   "devDependencies": {
@@ -10,6 +10,7 @@
     "node-addon-api": "^8.5.0",
     "node-gyp": "^11.4.2",
     "tsx": "^4.20.6",
-    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.52.0"
+    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.52.0",
+    "vitest": "^3.2.4"
   }
 }

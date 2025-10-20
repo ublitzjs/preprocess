@@ -1,5 +1,4 @@
 #include "./include/os.hpp"
-#include <iostream>
 #include <uv.h>
 #include "./include/shared2.hpp"
 void libuvWorker::Finalize(uv_work_t*, int){}
@@ -50,23 +49,18 @@ void libuvWorker::JSCachingThreadPool(
         libuvWorker::QueueWork(&workerData->uv_request);
         await.wait();
         uint8_t status = await.get();
+        // tsfn is a caches::emitter given from node::events or tseep
         tsfn.BlockingCall([status, templateName](
               Napi::Env env, Napi::Function jsCallback) {
-          switch (status) {
-            case Statuses::NoFile:
-            case Statuses::CantRead:
-            case Statuses::CantGetSize:
-              return Napi::Error::New(env, "Can't find file " + templateName)
-                .ThrowAsJavaScriptException();
-            case Statuses::CantAllocate:
-              return Napi::Error::New(env, "Can't allocate memory for this file: " + templateName)
-                .ThrowAsJavaScriptException();
-            case Statuses::Success:
-              jsCallback.Call({});
-              return;
-            }
+          Napi::Value error = 
+            status == Statuses::Success
+            ? env.Undefined()
+            : (status == Statuses::CantAllocate 
+                ? Napi::Error::New(env, "Can't allocate memory for this file").Value()
+                : Napi::Error::New(env, "Does this file exist?").Value()
+              );
+            jsCallback.Call({Napi::String::New(env, templateName), error});
           });
-        tsfn.Release();
       }
 
 //void workers::FS::ThreadPool(PatternStruct* patternStruct, Napi::ThreadSafeFunction){

@@ -103,6 +103,7 @@ namespace caches {
   };
   extern std::map<std::string, dataStruct> dataMap;
   extern std::mutex dataMapMutex;
+  extern Napi::ThreadSafeFunction emitter;
 }
   namespace libuvWorker {
     enum Statuses : uint8_t {

@@ -16,6 +16,8 @@ type JSStreamCb = (
 )
 export var addon: {
   streamToFS(params: FSStreamParams, templates: string[], output:string, callback: ()=>void): void;
+  setCachingEmitter(emit: (key:string, ...args: any[])=>void): void
+  Stop(): void;
   streamToJS(params: JSStreamParams, templaets: string[], callback: JSStreamCb): void;
   setSyntax(pattern: string, params: {
     prefix: string;
@@ -33,5 +35,5 @@ export var addon: {
    * @returns true if template was JUST cached by THIS function call, and FALSE if it was cached by another thread JUST NOW or a while ago. Returning "false" doesn't mean that function failed.
    * @throws error if something failed.
   * */
-  cache(name: string, isTemporary: boolean, cb: ()=>void): boolean; // callback is async (unless you race-condition happened and function is just waiting until other thread caches a template. 
+  cache(name: string): boolean; 
 } = require("../build/Release/addon.node")
