@@ -149,8 +149,7 @@ namespace caches {
           bool cacheFullFile,
           caches::dataStruct* cacheDummy,
           const syntax::dataStruct* syntaxStruct,
-          std::string templateName,
-          Napi::ThreadSafeFunction tsfn
+          std::string templateName
       );
   }
 extern uint32_t maxChunkSize;

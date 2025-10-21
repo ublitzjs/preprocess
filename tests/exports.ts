@@ -17,6 +17,8 @@ type JSStreamCb = (
 export var addon: {
   streamToFS(params: FSStreamParams, templates: string[], output:string, callback: ()=>void): void;
   setCachingEmitter(emit: (key:string, ...args: any[])=>void): void
+  // if you NEVER call "cache" - set second param to 0.
+  createThreadPools(streamingWorkersAmount: number, cachingWorkersAmount: number): void;
   Stop(): void;
   streamToJS(params: JSStreamParams, templaets: string[], callback: JSStreamCb): void;
   setSyntax(pattern: string, params: {

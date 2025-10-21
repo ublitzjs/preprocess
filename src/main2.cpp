@@ -1,22 +1,73 @@
 #include <iostream>
+#include <queue>
 #include <thread>
 #include <napi.h>
+#include <functional>
+#include <condition_variable>
 #include <map>
 #include <vector>
 #include <mutex>
 #include <uv.h>
 #include "./include/os.hpp"
 #include "./include/shared2.hpp"
-
+class ThreadPools {
+private:
+  std::vector<std::thread> threads;
+  std::queue<std::function<void()>> queue;
+  std::mutex queueMutex;
+  std::condition_variable synchronize;
+  bool shouldStop = false;
+public:
+  ThreadPools() = default;
+  void Init(uint8_t amount) {
+    threads.reserve(amount);
+    for(uint8_t i = 0; i < amount; i++){
+      threads.emplace_back([this] () -> void {
+        do {
+          std::unique_lock<std::mutex> lock(queueMutex);
+          std::cout<<"Waiting for task\n";
+          synchronize.wait(lock, [this] {return shouldStop || !queue.empty();});
+          if(queue.empty() && shouldStop) return;
+          std::function<void()> task = std::move(queue.front());
+          queue.pop();
+          lock.unlock();
+          std::cout<<"Proceeded to task\n";
+          task();
+        } while (true);
+      });
+    }
+  }
+  // just to avoid constructing std::function<void()> each time
+  template<typename Task>
+  void enqueue(Task&& task){
+    std::unique_lock<std::mutex> lock(queueMutex);
+    queue.emplace(
+      std::forward<Task>(task)
+    );
+    lock.unlock();
+    synchronize.notify_one();
+  }
+  void Stop(){
+    std::unique_lock<std::mutex> lock(queueMutex);
+    shouldStop = true;
+    lock.unlock();
+    synchronize.notify_all();
+    for(std::thread& thread : threads) thread.join();
+  }
+};
 std::vector<syntax::dataStruct> syntax::dataVector; 
 std::mutex caches::dataMapMutex;
 std::map<std::string, caches::dataStruct> caches::dataMap;
 uint32_t maxChunkSize = 64*1024;
-Napi::ThreadSafeFunction caches::emitter;
+ThreadPools streamingWorkers;
+ThreadPools cachingWorkers;
 
+Napi::ThreadSafeFunction caches::emitter;
 namespace exports {
   void Stop(const Napi::CallbackInfo& info){
     caches::emitter.Release();
+    streamingWorkers.Stop();
+    cachingWorkers.Stop();
   } 
   void streamToFS(const Napi::CallbackInfo &info){
     // I have to open input file here. If no file or too many descriptors open - throw js error;
@@ -26,6 +77,10 @@ namespace exports {
   }
   void streamToJS(const Napi::CallbackInfo &info){
 
+  }
+  void createThreadPools(const Napi::CallbackInfo &info){
+    streamingWorkers.Init(info[0].As<Napi::Number>().Uint32Value());
+    cachingWorkers.Init(info[1].As<Napi::Number>().Uint32Value());
   }
   void setSyntax(const Napi::CallbackInfo &info){
     Napi::Object params = info[1].As<Napi::Object>();
@@ -83,15 +138,15 @@ namespace exports {
       ).ThrowAsJavaScriptException();
       return Napi::Boolean::New(info.Env(), false);
     }
-    std::thread(
-        libuvWorker::JSCachingThreadPool,
-        true,
-        true,
-        cachePointer,
-        syntaxStruct,
-        templateName,
-        caches::emitter
-    ).detach();
+    cachingWorkers.enqueue([cachePointer, syntaxStruct, templateName] {
+      libuvWorker::JSCachingThreadPool(
+          true,
+          true,
+          cachePointer,
+          syntaxStruct,
+          templateName
+      );
+    });
     return Napi::Boolean::New(info.Env(), false);
   };
   Napi::Boolean clearCache(const Napi::CallbackInfo &info){
@@ -112,6 +167,7 @@ namespace exports {
   }
 }
 Napi::Object Init(Napi::Env env, Napi::Object exportsObj){
+  exportsObj.Set("createThreadPools", Napi::Function::New(env, exports::createThreadPools));
   exportsObj.Set("streamToFS", Napi::Function::New(env, exports::streamToFS));
   exportsObj.Set("streamToJS", Napi::Function::New(env, exports::streamToJS));
   exportsObj.Set("setSyntax", Napi::Function::New(env, exports::setSyntax));

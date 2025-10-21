@@ -40,8 +40,7 @@ void libuvWorker::JSCachingThreadPool(
           bool cacheFullFile,
           caches::dataStruct* cacheDummy,
           const syntax::dataStruct* const syntaxStruct,
-          std::string templateName,
-          Napi::ThreadSafeFunction tsfn
+          std::string templateName
       ){
         libuvWorker::dataStruct *workerData = new libuvWorker::dataStruct(tmp, cacheFullFile, syntaxStruct, cacheDummy, templateName); 
         std::future<libuvWorker::Statuses> await = workerData->sync.get_future();
@@ -50,14 +49,14 @@ void libuvWorker::JSCachingThreadPool(
         await.wait();
         uint8_t status = await.get();
         // tsfn is a caches::emitter given from node::events or tseep
-        tsfn.BlockingCall([status, templateName](
+        caches::emitter.BlockingCall([status, templateName](
               Napi::Env env, Napi::Function jsCallback) {
           Napi::Value error = 
             status == Statuses::Success
             ? env.Undefined()
             : (status == Statuses::CantAllocate 
                 ? Napi::Error::New(env, "Can't allocate memory for this file").Value()
-                : Napi::Error::New(env, "Does this file exist?").Value()
+                : Napi::Error::New(env, "Can't open file").Value()
               );
             jsCallback.Call({Napi::String::New(env, templateName), error});
           });
