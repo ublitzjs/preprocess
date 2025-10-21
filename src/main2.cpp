@@ -1,73 +1,17 @@
-#include <iostream>
-#include <queue>
-#include <thread>
 #include <napi.h>
-#include <functional>
-#include <condition_variable>
 #include <map>
 #include <vector>
 #include <mutex>
 #include <uv.h>
 #include "./include/os.hpp"
 #include "./include/shared2.hpp"
-class ThreadPools {
-private:
-  std::vector<std::thread> threads;
-  std::queue<std::function<void()>> queue;
-  std::mutex queueMutex;
-  std::condition_variable synchronize;
-  bool shouldStop = false;
-public:
-  ThreadPools() = default;
-  void Init(uint8_t amount) {
-    threads.reserve(amount);
-    for(uint8_t i = 0; i < amount; i++){
-      threads.emplace_back([this] () -> void {
-        do {
-          std::unique_lock<std::mutex> lock(queueMutex);
-          std::cout<<"Waiting for task\n";
-          synchronize.wait(lock, [this] {return shouldStop || !queue.empty();});
-          if(queue.empty() && shouldStop) return;
-          std::function<void()> task = std::move(queue.front());
-          queue.pop();
-          lock.unlock();
-          std::cout<<"Proceeded to task\n";
-          task();
-        } while (true);
-      });
-    }
-  }
-  // just to avoid constructing std::function<void()> each time
-  template<typename Task>
-  void enqueue(Task&& task){
-    std::unique_lock<std::mutex> lock(queueMutex);
-    queue.emplace(
-      std::forward<Task>(task)
-    );
-    lock.unlock();
-    synchronize.notify_one();
-  }
-  void Stop(){
-    std::unique_lock<std::mutex> lock(queueMutex);
-    shouldStop = true;
-    lock.unlock();
-    synchronize.notify_all();
-    for(std::thread& thread : threads) thread.join();
-  }
-};
-std::vector<syntax::dataStruct> syntax::dataVector; 
-std::mutex caches::dataMapMutex;
-std::map<std::string, caches::dataStruct> caches::dataMap;
-uint32_t maxChunkSize = 64*1024;
-ThreadPools streamingWorkers;
-ThreadPools cachingWorkers;
 
-Napi::ThreadSafeFunction caches::emitter;
+Napi::ThreadSafeFunction caching::emitter;
 namespace exports {
   void Stop(const Napi::CallbackInfo& info){
-    caches::emitter.Release();
-    streamingWorkers.Stop();
-    cachingWorkers.Stop();
+    caching::emitter.Release();
+    streaming::workers.Stop();
+    caching::workers.Stop();
   } 
   void streamToFS(const Napi::CallbackInfo &info){
     // I have to open input file here. If no file or too many descriptors open - throw js error;
@@ -79,8 +23,8 @@ namespace exports {
 
   }
   void createThreadPools(const Napi::CallbackInfo &info){
-    streamingWorkers.Init(info[0].As<Napi::Number>().Uint32Value());
-    cachingWorkers.Init(info[1].As<Napi::Number>().Uint32Value());
+    streaming::workers.Init(info[0].As<Napi::Number>().Uint32Value());
+    caching::workers.Init(info[1].As<Napi::Number>().Uint32Value());
   }
   void setSyntax(const Napi::CallbackInfo &info){
     Napi::Object params = info[1].As<Napi::Object>();
@@ -97,7 +41,7 @@ namespace exports {
     maxChunkSize = info[0].As<Napi::Number>().Int32Value();
   }
   void setCachingEmitter(const Napi::CallbackInfo& info){
-    caches::emitter = Napi::ThreadSafeFunction::New(
+    caching::emitter = Napi::ThreadSafeFunction::New(
        info.Env(),
        info[0].As<Napi::Function>(),
        "caching finalizing emitter",
@@ -107,12 +51,12 @@ namespace exports {
   }
   Napi::Boolean cache(const Napi::CallbackInfo &info){
     const std::string templateName = info[0].As<Napi::String>().Utf8Value();
-    caches::dataStruct* cachePointer;
+    caching::dataStruct* cachePointer;
     std::atomic<bool>* pendingReady = nullptr;
     {
-      std::lock_guard<std::mutex> lock(caches::dataMapMutex);
-      if(caches::dataMap.count(templateName)){
-        caches::dataStruct& cache = caches::dataMap[templateName];
+      std::lock_guard<std::mutex> lock(caching::dataMapMutex);
+      if(caching::dataMap.count(templateName)){
+        caching::dataStruct& cache = caching::dataMap[templateName];
         cache.tmp = false;
         cache.busyLevel++;
         if(cache.isReady.load())
@@ -120,7 +64,7 @@ namespace exports {
         
         pendingReady = &cache.isReady;
       } else {
-        auto [keyValuePair, boolean] = caches::dataMap.emplace(
+        auto [keyValuePair, boolean] = caching::dataMap.emplace(
             std::piecewise_construct,
             std::forward_as_tuple(templateName.c_str()),
             std::forward_as_tuple()
@@ -138,7 +82,7 @@ namespace exports {
       ).ThrowAsJavaScriptException();
       return Napi::Boolean::New(info.Env(), false);
     }
-    cachingWorkers.enqueue([cachePointer, syntaxStruct, templateName] {
+    caching::workers.enqueue([cachePointer, syntaxStruct, templateName] {
       libuvWorker::JSCachingThreadPool(
           true,
           true,
@@ -151,18 +95,16 @@ namespace exports {
   };
   Napi::Boolean clearCache(const Napi::CallbackInfo &info){
     const std::string& templateName = info[0].As<Napi::String>().Utf8Value();
-    std::lock_guard<std::mutex> lock(caches::dataMapMutex);
-    if(!caches::dataMap.count(templateName)) {
-      std::cout<<"No cache at all\n";
+    std::lock_guard<std::mutex> lock(caching::dataMapMutex);
+    if(!caching::dataMap.count(templateName)) 
       return Napi::Boolean::New(info.Env(), true);
-    }
-    caches::dataStruct& cache = caches::dataMap[templateName];
+    caching::dataStruct& cache = caching::dataMap[templateName];
     // remove that 1 additional level when calling "cache" with "non-temporary" state.
     if(cache.busyLevel) cache.busyLevel--;
     cache.tmp = true;
     bool isFree = !cache.busyLevel;
     if(isFree)
-      caches::dataMap.erase(info[0].As<Napi::String>().Utf8Value()); //destructor takes care of heap memory
+      caching::dataMap.erase(info[0].As<Napi::String>().Utf8Value()); //destructor takes care of heap memory
     return Napi::Boolean::New(info.Env(), isFree);
   }
 }

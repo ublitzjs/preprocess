@@ -1,4 +1,7 @@
 #include <regex>
+#include <functional>
+#include <condition_variable>
+#include <utility>
 //#include <stack>
 #include <string>
 #include <atomic>
@@ -6,6 +9,51 @@
 #include <stdint.h>
 #include <napi.h>
 #include <uv.h>
+#include <queue>
+
+class ThreadPools {
+private:
+  std::vector<std::thread> threads;
+  std::queue<std::function<void()>> queue;
+  std::mutex queueMutex;
+  std::condition_variable synchronize;
+  bool shouldStop = false;
+public:
+  ThreadPools() = default;
+  void Init(uint8_t amount) {
+    threads.reserve(amount);
+    for(uint8_t i = 0; i < amount; i++){
+      threads.emplace_back([this] () -> void {
+        do {
+          std::unique_lock<std::mutex> lock(queueMutex);
+          synchronize.wait(lock, [this] {return shouldStop || !queue.empty();});
+          if(queue.empty() && shouldStop) return;
+          std::function<void()> task = std::move(queue.front());
+          queue.pop();
+          lock.unlock();
+          task();
+        } while (true);
+      });
+    }
+  }
+  // just to avoid constructing std::function<void()> each time
+  template<typename Task>
+  void enqueue(Task&& task){
+    std::unique_lock<std::mutex> lock(queueMutex);
+    queue.emplace(
+      std::forward<Task>(task)
+    );
+    lock.unlock();
+    synchronize.notify_one();
+  }
+  void Stop(){
+    std::unique_lock<std::mutex> lock(queueMutex);
+    shouldStop = true;
+    lock.unlock();
+    synchronize.notify_all();
+    for(std::thread& thread : threads) thread.join();
+  }
+};
 namespace syntax {
   struct dataStruct { // use std::string due to Small String Optimization
     const std::regex pattern;
@@ -58,7 +106,7 @@ namespace syntax {
   }
 }
 
-namespace caches {
+namespace caching {
   // I allocate such buffer |----|-| , where the end is syntaxPartials
   struct dataStruct {
     char* const pointer;
@@ -75,12 +123,12 @@ namespace caches {
     // dataStruct is created without any info when calling "cache". This flag changes when caching is complete. This ensures that calling "cache" when data is not initialized will fail. To wait for initialisation "std::atomic_ref<bool>::wait" is preferred.
     std::atomic<bool> isReady;
     bool tmp = true;
-    // it creates a dummy. caches::dataMap needs to have a sign that file is BEING cached right now. When it finishes caching - waitUntilReady
+    // it creates a dummy. caching::dataMap needs to have a sign that file is BEING cached right now. When it finishes caching - waitUntilReady
     dataStruct(): pointer(nullptr), filename(nullptr), mainChunkSize(0), syntaxPartialsSize(0), isReady(false) {};
     inline bool isCachedInMap() const noexcept {
       return filename;
     }
-    // after caches::map.emplace I get a string and set it
+    // after caching::map.emplace I get a string and set it
     void MarkAsCachedInMap(const std::string* const filenamePointer){
       *const_cast<const std::string**>(&filename) = filenamePointer;
     }
@@ -104,6 +152,7 @@ namespace caches {
   extern std::map<std::string, dataStruct> dataMap;
   extern std::mutex dataMapMutex;
   extern Napi::ThreadSafeFunction emitter;
+  extern ThreadPools workers;
 }
   namespace libuvWorker {
     enum Statuses : uint8_t {
@@ -116,7 +165,7 @@ namespace caches {
     struct dataStruct {
       uv_work_t uv_request; // when instance get deleted - request data as well;
       const syntax::dataStruct* const syntaxStruct;
-      caches::dataStruct* const cache;
+      caching::dataStruct* const cache;
       const std::string templateName;
       std::promise<Statuses> sync;
       const bool cacheFullFile;
@@ -125,7 +174,7 @@ namespace caches {
           bool cacheIsTmp,
           bool cacheFullFile,
           const syntax::dataStruct* const syntax,
-          caches::dataStruct* cache,
+          caching::dataStruct* cache,
           std::string templateName
       ) : syntaxStruct(syntax),
         cache(cache),
@@ -147,14 +196,16 @@ namespace caches {
     void JSCachingThreadPool(
           bool tmp,
           bool cacheFullFile,
-          caches::dataStruct* cacheDummy,
+          caching::dataStruct* cacheDummy,
           const syntax::dataStruct* syntaxStruct,
           std::string templateName
       );
   }
 extern uint32_t maxChunkSize;
 
-
+namespace streaming {
+  extern ThreadPools workers;
+}
 //namespace processStackItems {
 //  class Base {
 //  protected:
@@ -211,8 +262,8 @@ extern uint32_t maxChunkSize;
 //    // callback from js
 //    Napi::ThreadSafeFunction tsfn;
 //
-//    // on creation I loop over "files" and for each filename insert a corresponding pointer from caches::map. If there is no such -> nullptr. When I get to nullptr, I check its size
-//    std::vector<caches::dataStruct*> chunks;
+//    // on creation I loop over "files" and for each filename insert a corresponding pointer from caching::map. If there is no such -> nullptr. When I get to nullptr, I check its size
+//    std::vector<caching::dataStruct*> chunks;
 //
 //    // This is meant for recursive includes
 //    std::stack<processStackItems::Base> processes;

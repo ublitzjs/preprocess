@@ -30,7 +30,7 @@ void libuvWorker::ExecuteWork(uv_work_t *req){
   }
   close(descriptor);
   {
-    std::lock_guard<std::mutex> lock(caches::dataMapMutex);
+    std::lock_guard<std::mutex> lock(caching::dataMapMutex);
     workerData.cache->Init(workerData.cacheIsTmp, wholeChunk, syntaxPartialsSize, mainChunkSize);
   }
   workerData.sync.set_value(Statuses::Success);
@@ -38,7 +38,7 @@ void libuvWorker::ExecuteWork(uv_work_t *req){
 void libuvWorker::JSCachingThreadPool(
           bool tmp,
           bool cacheFullFile,
-          caches::dataStruct* cacheDummy,
+          caching::dataStruct* cacheDummy,
           const syntax::dataStruct* const syntaxStruct,
           std::string templateName
       ){
@@ -48,8 +48,8 @@ void libuvWorker::JSCachingThreadPool(
         libuvWorker::QueueWork(&workerData->uv_request);
         await.wait();
         uint8_t status = await.get();
-        // tsfn is a caches::emitter given from node::events or tseep
-        caches::emitter.BlockingCall([status, templateName](
+        // tsfn is a caching::emitter given from node::events or tseep
+        caching::emitter.BlockingCall([status, templateName](
               Napi::Env env, Napi::Function jsCallback) {
           Napi::Value error = 
             status == Statuses::Success

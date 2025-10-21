@@ -44,7 +44,7 @@ try{
   console.error("Error from trying to cache file (here its existence doesn't matter) without right syntax", err);
 }
 JSCache("b.txt", (err)=>{
-  console.error("Error from not finding file", err);
+  console.error("Error for not finding file", err);
 });
 setTimeout(()=>{
   console.log(
@@ -58,7 +58,7 @@ setTimeout(()=>{
   )
   console.log(
     "JS: fifth call to cache ANOTHER file", 
-    JSCache("c.txt", ()=>{
+    JSCache("c.js", ()=>{
       console.log(
         "JS: fifth call cleared ANOTHER file?",
         addon.clearCache("c.js")
