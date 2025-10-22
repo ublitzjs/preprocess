@@ -7,7 +7,7 @@
 #include <thread>
 #include "./include/os.hpp"
 #include "./include/shared.hpp"
-#include <stringzilla/stringzilla.hpp>
+//#include <stringzilla/stringzilla.hpp>
 #include <napi.h>
 
 std::vector<PatternStruct>* patterns = new std::vector<PatternStruct>();
@@ -104,7 +104,10 @@ namespace exports {
     const std::string& insertOn = params.Get("insertOn").As<Napi::String>().Utf8Value();
     const std::string& removeOn = params.Get("removeOn").As<Napi::String>().Utf8Value();
     const std::string& end = params.Get("end").As<Napi::String>().Utf8Value();
-    const uint8_t maxParamLength = std::max({ insertOn.length(), removeOn.length() });
+    const uint8_t maxParamLength = std::max<uint8_t>({
+        static_cast<uint8_t>(insertOn.length()),
+        static_cast<uint8_t>(removeOn.length())
+    });
     const uint8_t maxSyntaxPartialsSizeVar = std::max<int16_t>({
         static_cast<uint8_t>(params.Get("maxInsertKeyLength").As<Napi::Number>().Int32Value() + end.size()),
         static_cast<uint8_t>(prefix.size() + maxParamLength),

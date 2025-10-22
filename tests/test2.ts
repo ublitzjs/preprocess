@@ -16,55 +16,56 @@ addon.setSyntax("js", {
   removeOn: "REMOVE="
 }, 30);
 //
+console.log("JS: 1) cache a.txt")
+JSCache("a.txt", (err)=>{
+  console.log("JS: got err from a.txt 1)?", err);
+})
 console.log(
-  "JS: Return of first call",
-  JSCache("a.txt", (err)=>{
-    console.log("first cb", err);
-  })
+  "JS: 2) cache a.txt",
 )
-
+JSCache("a.txt", ()=>{
+  console.log(
+    "JS: Can it clear a.txt now?",
+    addon.clearCache("a.txt")
+  );
+})
 console.log(
-  "JS: Return of second call",
-  JSCache("a.txt", ()=>{
-    console.log(
-      "JS: second call cleared cache?",
-      addon.clearCache("a.txt")
-    );
-  })
-)
-console.log(
-  "JS: third call to cache ANOTHER file", 
-  JSCache("c.txt", (err)=>{
-    console.log("JS: third call failed?", err);
-  })
+  "JS: 1) cache c.js", 
 );
+JSCache("c.js", (err)=>{
+  console.log("JS: got error from c.js 1)?", err);
+})
 try{
+  console.log("JS: 1) cache b.text, which has no right syntax");
   JSCache("b.text", ()=>{});
 } catch (err){
-  console.error("Error from trying to cache file (here its existence doesn't matter) without right syntax", err);
+  console.error("JS: Immmediate error from b.text", (err as Error).message );
 }
+console.log("JS: 1) cache non-existing b.txt");
 JSCache("b.txt", (err)=>{
-  console.error("Error for not finding file", err);
+  console.error("JS: error from worker about b.txt", (err as Error).message);
 });
 setTimeout(()=>{
   console.log(
-    "JS: Return of fourth call",
-    JSCache("a.txt", ()=>{
+    "JS: 4) cache a.txt after timeout.",
+      )
+      JSCache("a.txt", ()=>{
       console.log(
-        "JS: fourth call clear cache ?",
+        "JS: try to clear a.txt cache. Success?",
         addon.clearCache("a.txt")
       );
     })
-  )
+
   console.log(
-    "JS: fifth call to cache ANOTHER file", 
-    JSCache("c.js", ()=>{
+    "JS: 2) cache c.js again", 
+    
+  );
+  JSCache("c.js", ()=>{
       console.log(
-        "JS: fifth call cleared ANOTHER file?",
+        "JS: Cleared c.js?",
         addon.clearCache("c.js")
       );
     })
-  );
 }, 400);
 setTimeout(()=>{
   addon.Stop();

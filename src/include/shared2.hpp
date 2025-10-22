@@ -1,16 +1,17 @@
+#pragma once
 #include <regex>
 #include <functional>
 #include <condition_variable>
 #include <utility>
+#include <uv.h>
 //#include <stack>
 #include <string>
 #include <atomic>
+#include <map>
 #include <future>
 #include <stdint.h>
 #include <napi.h>
-#include <uv.h>
 #include <queue>
-
 class ThreadPools {
 private:
   std::vector<std::thread> threads;
@@ -79,9 +80,10 @@ namespace syntax {
         removeOn(removeOn),
         end(end),
         maxParamLength(
-            static_cast<uint8_t>(
-              std::max({ insertOn.length(), removeOn.length() })
-            )
+          std::max<uint8_t>({
+            static_cast<uint8_t>(insertOn.length()),
+            static_cast<uint8_t>(removeOn.length())
+          })
         ),
         syntaxPartialsSize(
           std::max<int16_t>({
@@ -90,9 +92,9 @@ namespace syntax {
           }) - 1 /*because PARTIALS*/
         ) {}
   };
-  extern std::vector<dataStruct> dataVector;
-  inline dataStruct* findMatchingStruct(const std::string& patternString){
-    for(dataStruct& syntax : dataVector){
+  extern std::vector<syntax::dataStruct> dataVector;
+  inline syntax::dataStruct* findMatchingStruct(const std::string& patternString){
+    for(syntax::dataStruct& syntax : dataVector){
       std::cmatch matches;
       if(
           std::regex_search(

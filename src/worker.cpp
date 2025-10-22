@@ -47,7 +47,7 @@
 //		);
 //		if (output == INVALID_HANDLE_VALUE) {
 //			std::cerr << "Couldn't create output file " << reqs->inputFilename;
-//			CloseHandle(input);
+//			CloseHande(input);
 //			exit(1);
 //		}
 //		chunk.additionalBuffer = new char[

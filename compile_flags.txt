@@ -1,5 +1,6 @@
 -IStringZilla/include
 -std=c++20
--DPLATFORM_APPROACH=1
+-I..\..\AppData\Local\node-gyp\Cache\25.0.0\include\node
+-DPLATFORM_APPROACH=0
 -I./node_modules/node-addon-api/
 -I/usr/include/node/

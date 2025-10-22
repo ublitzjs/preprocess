@@ -1,34 +1,32 @@
-#include "./include/os.hpp"
-#include <uv.h>
 #include "./include/shared2.hpp"
+#include "./include/cross_os.hpp"
 void libuvWorker::Finalize(uv_work_t*, int){}
 void libuvWorker::ExecuteWork(uv_work_t *req){
   libuvWorker::dataStruct& workerData = *static_cast<libuvWorker::dataStruct*>(req->data);
-  int descriptor = open(workerData.templateName.c_str(), O_RDONLY);
-  if (descriptor == -1) {
+  cross_os::descriptor_t descriptor = cross_os::OpenFileRead(workerData.templateName.c_str());
+  if (descriptor == cross_os::invalid_descriptor_t) {
     return workerData.sync.set_value(Statuses::NoFile);
   }
-  // get file's size
-  struct stat inputStats;
-  if (fstat(descriptor, &inputStats)) {
-    close(descriptor);
+  int64_t fileSize = cross_os::GetFileSize(descriptor);
+  if (fileSize == cross_os::invalid_file_size) {
+    cross_os::CloseDescriptor(descriptor);
     return workerData.sync.set_value(Statuses::CantGetSize);
   }
   uint8_t syntaxPartialsSize = workerData.syntaxStruct->syntaxPartialsSize;
-  uint32_t mainChunkSize = (inputStats.st_size <= maxChunkSize || workerData.cacheFullFile) ? inputStats.st_size : maxChunkSize;
+  uint32_t mainChunkSize = (fileSize <= maxChunkSize || workerData.cacheFullFile) ? fileSize : maxChunkSize;
   char* const wholeChunk = new char[
     mainChunkSize + syntaxPartialsSize
   ];
   if (!wholeChunk){
-    close(descriptor);
+    cross_os::CloseDescriptor(descriptor);
     return workerData.sync.set_value(Statuses::CantAllocate);
   }
-  if (read(descriptor, wholeChunk, mainChunkSize) == -1) {
+  if(!cross_os::ReadFile(descriptor, wholeChunk, mainChunkSize)){
     delete[] wholeChunk;
-    close(descriptor);
+    cross_os::CloseDescriptor(descriptor);
     return workerData.sync.set_value(Statuses::CantRead);
   }
-  close(descriptor);
+  cross_os::CloseDescriptor(descriptor);
   {
     std::lock_guard<std::mutex> lock(caching::dataMapMutex);
     workerData.cache->Init(workerData.cacheIsTmp, wholeChunk, syntaxPartialsSize, mainChunkSize);

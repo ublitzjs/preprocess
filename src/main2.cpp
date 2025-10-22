@@ -1,10 +1,9 @@
-#include <napi.h>
 #include <map>
 #include <vector>
 #include <mutex>
-#include <uv.h>
-#include "./include/os.hpp"
 #include "./include/shared2.hpp"
+#include <napi.h>
+#include <uv.h>
 
 Napi::ThreadSafeFunction caching::emitter;
 namespace exports {
