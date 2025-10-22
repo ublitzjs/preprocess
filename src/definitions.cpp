@@ -8,6 +8,6 @@ ThreadPools caching::workers;
 ThreadPools streaming::workers;
 #if PLATFORM_APPROACH == 0
 cross_os::descriptor_t cross_os::invalid_descriptor_t = INVALID_HANDLE_VALUE;
-#elif PLATFORM_APROACH == 1
-os::descriptor_t os::invalid_descriptor_t = -1;
+#elif PLATFORM_APPROACH == 1
+cross_os::descriptor_t cross_os::invalid_descriptor_t = -1;
 #endif
