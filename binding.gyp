@@ -4,11 +4,12 @@
       "target_name": "addon",
       "sources": [ "src/main2.cpp", "src/worker2.cpp", "src/definitions.cpp" ],
       "include_dirs": [
-        "<!@(node -p \"require('node-addon-api').include\")"
+        "<!@(node -p \"require('node-addon-api').include\")",
       ],
       "dependencies": [
          "<!(node -p \"require('node-addon-api').gyp\")"
        ],
+       "libraries": ["-ltbb"],
        "cflags!": [ "-fno-exceptions" ],
        "cflags_cc!": [ "-fno-exceptions", "--std=c++20" ],
        "defines": [ "NAPI_CPP_EXCEPTIONS" ],
@@ -29,7 +30,7 @@
           }
         }],
         ["OS=='linux'", {
-          "cflags_cc": [ "-std=c++20", "-pthread", "-DPLATFORM_APPROACH=1" ],
+          "cflags_cc": [ "-pthread", "-DPLATFORM_APPROACH=1" ],
           "ldflags": [ "-pthread" ]
         }]
       ]

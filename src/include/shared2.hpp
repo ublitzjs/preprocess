@@ -1,4 +1,5 @@
 #pragma once
+#include <iostream>
 #include <regex>
 #include <functional>
 #include <condition_variable>
@@ -6,12 +7,13 @@
 #include <uv.h>
 //#include <stack>
 #include <string>
-#include <atomic>
-#include <map>
+#include <vector>
 #include <future>
 #include <stdint.h>
-#include <napi.h>
 #include <queue>
+#include <napi.h>
+#include <tbb/concurrent_unordered_map.h>
+#include <tbb/concurrent_hash_map.h>
 class ThreadPools {
 private:
   std::vector<std::thread> threads;
@@ -107,107 +109,196 @@ namespace syntax {
     return nullptr;
   }
 }
-
 namespace caching {
+  enum Status : int8_t {
+    Pending = 0,
+    Ready = 1,
+    NoFile = -1,
+    CantGetSize = -2,
+    CantRead = -3,
+    CantAllocate = -4
+  };
   // I allocate such buffer |----|-| , where the end is syntaxPartials
   struct dataStruct {
+    // >= 0 ? GOOD : BAD
     char* const pointer;
     /**
-     * if nullprt, then there are 2 cases:
-     * 1) if isReady == false, then it is just not initialised yet
-     * 2) if isReady == true, then this file is actually too big to be read at once. 
+     * filename is a heap allocated string...
      */
-    const std::string* const filename;
+    const char* const filename;
     const uint32_t mainChunkSize;
+    // whenever streaming worker gets some task, cache already is set to at least 1 and shouldn't be touched when workers picks it.
+    uint16_t busyLevel = 1;
     const uint8_t syntaxPartialsSize;
-    // when someone called "cache" and set that tmp is "non-temp", it means that developer WILL clear it with clearCache MANUALLY and busyLevel+=1 (just not to disappear before time comes). 
-    uint16_t busyLevel = 0;
-    // dataStruct is created without any info when calling "cache". This flag changes when caching is complete. This ensures that calling "cache" when data is not initialized will fail. To wait for initialisation "std::atomic_ref<bool>::wait" is preferred.
-    std::atomic<bool> isReady;
-    bool tmp = true;
-    // it creates a dummy. caching::dataMap needs to have a sign that file is BEING cached right now. When it finishes caching - waitUntilReady
-    dataStruct(): pointer(nullptr), filename(nullptr), mainChunkSize(0), syntaxPartialsSize(0), isReady(false) {};
+    int8_t status = Status::Pending;
+    // it creates a dummy. caching::dataMap needs to have a sign that file is BEING cached right now.
+    dataStruct(): pointer(nullptr), filename(nullptr), mainChunkSize(0), syntaxPartialsSize(0) {};
+    dataStruct(const std::string& filenameReference): 
+      pointer(nullptr),
+      filename(
+        static_cast<const char*>(
+          std::memcpy(
+            new char[filenameReference.size() + 1],
+            filenameReference.c_str(),
+            filenameReference.size() + 1
+          )
+        )
+      ),
+      mainChunkSize(0),
+      syntaxPartialsSize(0)
+    {}
     inline bool isCachedInMap() const noexcept {
       return filename;
     }
     // after caching::map.emplace I get a string and set it
-    void MarkAsCachedInMap(const std::string* const filenamePointer){
-      *const_cast<const std::string**>(&filename) = filenamePointer;
-    }
-    void Init(bool tmpParam, char* const syntaxPartialsParam, uint8_t syntaxPartialsSizeParam, uint32_t mainChunkSizeParam) {
+    inline void Init(char* const syntaxPartialsParam, uint8_t syntaxPartialsSizeParam, uint32_t mainChunkSizeParam) {
       // I do these SCARY casts just because constructor creates a DUMMY. Init function actually makes dummy usable 
       *const_cast<char**>(&pointer) = syntaxPartialsParam;
       *const_cast<uint8_t*>(&syntaxPartialsSize) = syntaxPartialsSizeParam;
       *const_cast<uint32_t*>(&mainChunkSize) = mainChunkSizeParam;
-      if(!tmp) tmp = tmpParam; // Lifetime of a cache must NOT be descresed without "clearCache". Template is temporary by default. If someone initialized it (here - in a race condition) as a "true" value, then he/she must have a reason to extend its lifetime AND ia taking responsibility to clear it, when time comes.
-      isReady.store(true, std::memory_order_relaxed);
-      isReady.notify_all();
+      status = Status::Ready;
     }
-    static inline void waitUntilReady(std::atomic<bool>* pendingReady){
-      pendingReady->wait(false, std::memory_order_relaxed);
-    }
-
     ~dataStruct(){
+      delete filename;
       delete pointer;
     }
   };
-  extern std::map<std::string, dataStruct> dataMap;
-  extern std::mutex dataMapMutex;
+  using dataMapType = tbb::concurrent_hash_map<std::string, dataStruct*>;
+  extern dataMapType dataMap;
+  // As it is created with unlimited queue - NonBlockingCall is not a worry
   extern Napi::ThreadSafeFunction emitter;
-  extern ThreadPools workers;
-}
-  namespace libuvWorker {
-    enum Statuses : uint8_t {
-      Success = 0,
-      NoFile = 1,
-      CantGetSize = 2,
-      CantRead = 3,
-      CantAllocate = 4
-    };
+  // I use libuv ONLY for caching
+  namespace libuv {
     struct dataStruct {
       uv_work_t uv_request; // when instance get deleted - request data as well;
       const syntax::dataStruct* const syntaxStruct;
       caching::dataStruct* const cache;
       const std::string templateName;
-      std::promise<Statuses> sync;
-      const bool cacheFullFile;
-      const bool cacheIsTmp;
+      // when true - only FULL file is cached. Otherwise it depends on maxChunkSize
+      const bool shouldNotifyJS;
+      inline void notifyCompletion(Status status);
+      inline void notifyJS(){
+        caching::emitter.NonBlockingCall(
+          [cache = this->cache](Napi::Env env, Napi::Function jsCallback) {
+            jsCallback.Call({
+              Napi::String::New(env, cache->filename),
+              Napi::Number::New(env, cache->status)
+            });
+          }
+        );
+      }
       dataStruct(
-          bool cacheIsTmp,
-          bool cacheFullFile,
           const syntax::dataStruct* const syntax,
           caching::dataStruct* cache,
-          std::string templateName
-      ) : syntaxStruct(syntax),
+          std::string templateName,
+          bool shouldNotifyJS = false
+          ) :
+        syntaxStruct(syntax),
         cache(cache),
         templateName(std::move(templateName)),
-        cacheFullFile(cacheFullFile),
-        cacheIsTmp(cacheIsTmp) {}
+        shouldNotifyJS(shouldNotifyJS) {}
     };
-    
-    void ExecuteWork(uv_work_t *req);
-    void Finalize(uv_work_t *req, int status);
-    inline void QueueWork(uv_work_t* request){
-      uv_queue_work(
-          uv_default_loop(),
-          request,
-          ExecuteWork,
-          Finalize
-      );
-    }
-    void JSCachingThreadPool(
-          bool tmp,
-          bool cacheFullFile,
-          caching::dataStruct* cacheDummy,
-          const syntax::dataStruct* syntaxStruct,
-          std::string templateName
-      );
+  void ExecuteWork(uv_work_t *req);
+  void Finalize(uv_work_t *req, int status);
+  inline void enqueue(uv_work_t* request){
+    uv_queue_work(
+        uv_default_loop(),
+        request,
+        ExecuteWork,
+        Finalize
+        );
   }
-extern uint32_t maxChunkSize;
-
+  }
+}
 namespace streaming {
   extern ThreadPools workers;
+  namespace inclusion {
+    // abstract class
+    class placeholder {
+    protected: 
+      placeholder() = default;
+    public:
+      virtual bool hasNext() const noexcept {
+        return false;
+      }
+      virtual Napi::Object next() const {
+        return {};
+      }
+    };
+    class placeholder_single : public placeholder {
+      Napi::Object value;
+      bool hasNext() const noexcept override {
+        static bool has = true;
+        bool currentValue = has;
+        return (has = false, currentValue);
+      }
+      Napi::Object next() const override {
+        return value;
+      }
+    };
+    class placeholder_multi: public placeholder {
+      Napi::Array values;
+      mutable uint8_t id = 0;
+      bool hasNext() const noexcept override {
+        return values.Length() > id;
+      }
+      Napi::Object next() const override {
+        uint8_t currentId = id++;
+        return values[currentId].As<Napi::Object>();
+      }
+    };
+  }
+  class process {
+  public:
+    static void workerCB(){
+      
+    }
+  };
+  class fsProcess: public process {};
+  struct dataStruct {
+    const syntax::dataStruct* const patternStruct;
+    Napi::Reference<Napi::Object> params;
+    Napi::Reference<Napi::Array> files;
+    const Napi::ThreadSafeFunction tsfn;
+    std::vector<caching::dataStruct*> chunks;
+    std::stack<inclusion::placeholder> includes;
+    dataStruct(
+        const syntax::dataStruct* const patternStruct,
+        Napi::Object params,
+        Napi::Array files,
+        Napi::ThreadSafeFunction tsfn
+    ) :
+      patternStruct(patternStruct),
+      params(Napi::Persistent(params)),
+      files(Napi::Persistent(files)),
+      tsfn(tsfn),
+      chunks(files.Length(), nullptr)
+    {}
+  };
+  // I use these tasks ONLY when corresponding cache in caching::dataMap is locked with accessor. That's why here I use more unsafe but fast unordered_map
+  extern tbb::concurrent_unordered_map<caching::dataStruct*, std::vector<dataStruct*>> cacheDependentTasks;
+  inline void enqueueCacheDependentTasks(caching::dataStruct* cache){
+    auto it = cacheDependentTasks.find(cache);
+    if(it != cacheDependentTasks.end()){
+     // for(dataStruct* task : it->second){
+     //   workers.enqueue([]{
+     //       // here call processing function
+     //   });
+     // }
+    }
+    cacheDependentTasks.unsafe_erase(cache);
+  }
 }
+inline void caching::libuv::dataStruct::notifyCompletion(caching::Status status){
+  // here, compared to its derived class, there is no thread waiting for caching to end. That's why no offloading can be done.
+  caching::dataMapType::accessor accessor;
+  caching::dataMap.find(accessor, cache->filename);
+  cache->status=status;
+  if(cache->busyLevel) streaming::enqueueCacheDependentTasks(cache);
+}
+
+extern uint32_t maxChunkSize;
+
 //namespace processStackItems {
 //  class Base {
 //  protected:

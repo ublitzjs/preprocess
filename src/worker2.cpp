@@ -1,65 +1,44 @@
 #include "./include/shared2.hpp"
 #include "./include/cross_os.hpp"
-void libuvWorker::Finalize(uv_work_t*, int){}
-void libuvWorker::ExecuteWork(uv_work_t *req){
-  libuvWorker::dataStruct& workerData = *static_cast<libuvWorker::dataStruct*>(req->data);
+void caching::libuv::Finalize(uv_work_t* req, int){
+  delete static_cast<caching::libuv::dataStruct*>(req->data);
+}
+void caching::libuv::ExecuteWork(uv_work_t *req){
+  using Status = caching::Status;
+  caching::libuv::dataStruct& workerData = *static_cast<caching::libuv::dataStruct*>(req->data);
   cross_os::descriptor_t descriptor = cross_os::OpenFileRead(workerData.templateName.c_str());
   if (descriptor == cross_os::invalid_descriptor_t) {
-    return workerData.sync.set_value(Statuses::NoFile);
+    return workerData.notifyCompletion(Status::NoFile);
   }
   int64_t fileSize = cross_os::GetFileSize(descriptor);
   if (fileSize == cross_os::invalid_file_size) {
     cross_os::CloseDescriptor(descriptor);
-    return workerData.sync.set_value(Statuses::CantGetSize);
+    return workerData.notifyCompletion(Status::CantGetSize);
   }
   uint8_t syntaxPartialsSize = workerData.syntaxStruct->syntaxPartialsSize;
-  uint32_t mainChunkSize = (fileSize <= maxChunkSize || workerData.cacheFullFile) ? fileSize : maxChunkSize;
+  uint32_t mainChunkSize = (fileSize <= maxChunkSize || workerData.shouldNotifyJS) ? fileSize : maxChunkSize;
   char* const wholeChunk = new char[
     mainChunkSize + syntaxPartialsSize
   ];
   if (!wholeChunk){
     cross_os::CloseDescriptor(descriptor);
-    return workerData.sync.set_value(Statuses::CantAllocate);
+    return workerData.notifyCompletion(Status::CantAllocate);
   }
   if(!cross_os::ReadFile(descriptor, wholeChunk, mainChunkSize)){
     delete[] wholeChunk;
     cross_os::CloseDescriptor(descriptor);
-    return workerData.sync.set_value(Statuses::CantRead);
+    return workerData.notifyCompletion(Status::CantRead);
   }
   cross_os::CloseDescriptor(descriptor);
   {
-    std::lock_guard<std::mutex> lock(caching::dataMapMutex);
-    workerData.cache->Init(workerData.cacheIsTmp, wholeChunk, syntaxPartialsSize, mainChunkSize);
+    caching::dataMapType::accessor accessor;
+    // This is just a way to lock cache in map. No other choice.
+    caching::dataMap.find(accessor, workerData.cache->filename);
+    workerData.cache->Init(wholeChunk, syntaxPartialsSize, mainChunkSize);
+    if(workerData.cache->busyLevel) streaming::enqueueCacheDependentTasks(workerData.cache);
   }
-  workerData.sync.set_value(Statuses::Success);
+  if(workerData.shouldNotifyJS) workerData.notifyJS();
 }
-void libuvWorker::JSCachingThreadPool(
-          bool tmp,
-          bool cacheFullFile,
-          caching::dataStruct* cacheDummy,
-          const syntax::dataStruct* const syntaxStruct,
-          std::string templateName
-      ){
-        libuvWorker::dataStruct *workerData = new libuvWorker::dataStruct(tmp, cacheFullFile, syntaxStruct, cacheDummy, templateName); 
-        std::future<libuvWorker::Statuses> await = workerData->sync.get_future();
-        workerData->uv_request.data = workerData;
-        libuvWorker::QueueWork(&workerData->uv_request);
-        await.wait();
-        uint8_t status = await.get();
-        // tsfn is a caching::emitter given from node::events or tseep
-        caching::emitter.BlockingCall([status, templateName](
-              Napi::Env env, Napi::Function jsCallback) {
-          Napi::Value error = 
-            status == Statuses::Success
-            ? env.Undefined()
-            : (status == Statuses::CantAllocate 
-                ? Napi::Error::New(env, "Can't allocate memory for this file").Value()
-                : Napi::Error::New(env, "Can't open file").Value()
-              );
-            jsCallback.Call({Napi::String::New(env, templateName), error});
-          });
-      }
-
 //void workers::FS::ThreadPool(PatternStruct* patternStruct, Napi::ThreadSafeFunction){
 //  using Worker = workers::FS;
 //   workerData = workers::FS();
