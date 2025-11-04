@@ -39,6 +39,31 @@ void caching::libuv::ExecuteWork(uv_work_t *req){
   }
   if(workerData.shouldNotifyJS) workerData.notifyJS();
 }
+void streaming::data::JS::threadCB(){
+  do {
+    using Level = streaming::inclusion::level;
+    // here state must be already prepared for usage
+    Level& inclusionLevel = recursiveInclusions.top();
+    streaming:inclusion::stateStruct& state = inclusionLevel.currentState;
+    if(state.chunk->status<0){
+      //TODO GLOBAL CLEANUP
+    }
+    //TODO PROCESS TEMPLATE CHUNK
+    //
+    using Status = Level::StatePreparationStatus;
+    Status levelStatus = inclusionLevel.prepareNext();
+    if(levelStatus == Status::StillUsable
+  } while(true);
+};
+void streaming::data::FS::threadCB(){
+  // preparation 
+  //TODO get current state. Its chunk is already cached and definitely valid
+  streaming::inclusion::stateStruct& currentState;
+  
+  do { // process chunk by each part
+    
+  } while(true);
+};
 //void workers::FS::ThreadPool(PatternStruct* patternStruct, Napi::ThreadSafeFunction){
 //  using Worker = workers::FS;
 //   workerData = workers::FS();

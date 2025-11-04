@@ -1,8 +1,9 @@
 #include "./include/shared2.hpp"
 #include "./include/cross_os.hpp"
 std::vector<syntax::dataStruct> syntax::dataVector; 
-tbb::concurrent_hash_map<std::string, caching::dataStruct*> caching::dataMap;
-tbb::concurrent_unordered_map<caching::dataStruct*, std::vector<streaming::dataStruct*>> streaming::cacheDependentTasks;
+tbb::concurrent_hash_map<std::string, caching::data::perhaps_streamed*> caching::dataMap;
+tbb::concurrent_unordered_map<caching::data::perhaps_streamed*, std::vector<streaming::data::Base*>> streaming::cacheDependentTasks;
+Napi::ThreadSafeFunction caching::emitter;
 uint32_t maxChunkSize = 64*1024;
 ThreadPools streaming::workers;
 #if PLATFORM_APPROACH == 0

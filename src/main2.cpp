@@ -4,18 +4,49 @@
 #include <uv.h>
 #include <tbb/concurrent_hash_map.h>
 
-Napi::ThreadSafeFunction caching::emitter;
 namespace exports {
   void Stop(const Napi::CallbackInfo& info){
     caching::emitter.Release();
     streaming::workers.Stop();
   } 
   void streamToFS(const Napi::CallbackInfo &info){
-    // I have to open input file here. If no file or too many descriptors open - throw js error;
-    Napi::ObjectReference params(Napi::Persistent(info[0].As<Napi::Object>()));
-    Napi::ObjectReference files(Napi::Persistent(info[1].As<Napi::Object>()));
-    files.Get(0u).As<Napi::Number>().Uint32Value();
-    //std::thread(workers::FS::ThreadPool).detach();
+    Napi::Object params(info[0].As<Napi::Object>());
+    Napi::Array inputFiles(info[1].As<Napi::Array>());
+    const std::string& mainTemplate = inputFiles.Get(params.Get("id").As<Napi::Number>().Uint32Value()).As<Napi::String>().Utf8Value();
+    const syntax::dataStruct* const syntaxStruct = syntax::findMatchingStruct(mainTemplate);
+    if(!syntaxStruct){
+      //TODO
+    }
+    caching::data::perhaps_streamed* recentlyCreatedCachePointer;
+    cross_os::descriptor_t output = cross_os::OpenFileWrite(mainTemplate.data());
+    if(output == cross_os::invalid_descriptor_t) {
+      return Napi::Error::New(info.Env(), "output file couldn't be created").ThrowAsJavaScriptException();
+    }
+
+    {
+      caching::dataMapType::accessor accessor;
+      if(!caching::dataMap.insert(accessor, mainTemplate)){
+        // cache has failed
+        if(accessor->second->status < 0) return Napi::Error::New(info.Env(), "outer template failed to be cached").ThrowAsJavaScriptException();
+        streaming::data::forFS* task = new streaming::data::forFS(
+            output,
+            params,
+            inputFiles,
+            info.Env(),
+            info[3].As<Napi::Function>(),
+            syntaxStruct,
+            accessor->second
+        );
+        // cache is already usable
+        if(accessor->second->status) return streaming::workers.enqueue([task]{task->threadCB();});
+        // cache is pending
+        else return streaming::cacheDependentTasks[accessor->second].push_back(task);
+      }
+      recentlyCreatedCachePointer = accessor->second;
+    }
+    caching::libuv::dataStruct* workerData = new caching::libuv::dataStruct(syntaxStruct, recentlyCreatedCachePointer, mainTemplate, true);
+    workerData->uv_request.data = workerData;
+    caching::libuv::enqueue(&workerData->uv_request);
   }
   void streamToJS(const Napi::CallbackInfo &info){
 
@@ -51,13 +82,14 @@ namespace exports {
   }
   Napi::Boolean cache(const Napi::CallbackInfo &info){
     const std::string& templateName = info[0].As<Napi::String>().Utf8Value();
-    caching::dataStruct* cachePointer;
+    const bool waitForAST = info[1].As<Napi::Boolean>().Value();
+    caching::data::full* cachePointer;
     {
       caching::dataMapType::accessor accessor;
       bool cacheWasRecentlyCreated = caching::dataMap.insert(accessor, templateName);
 
       if(cacheWasRecentlyCreated) {
-        cachePointer = (accessor->second = new caching::dataStruct{templateName});
+        accessor->second = (cachePointer =  new caching::data::full{templateName, waitForAST});
       } else {
         accessor->second->busyLevel++;
         return Napi::Boolean::New(info.Env(), accessor->second->status);

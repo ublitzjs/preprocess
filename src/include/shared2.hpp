@@ -1,19 +1,24 @@
 #pragma once
-#include <iostream>
 #include <regex>
 #include <functional>
 #include <condition_variable>
 #include <utility>
 #include <uv.h>
-//#include <stack>
+#include <stack>
 #include <string>
 #include <vector>
-#include <future>
 #include <stdint.h>
 #include <queue>
 #include <napi.h>
+#include <tbb/mutex.h>
 #include <tbb/concurrent_unordered_map.h>
 #include <tbb/concurrent_hash_map.h>
+#include "./cross_os.hpp"
+enum Action : uint8_t {
+  JustRead = 0,
+  Insert = 1,
+  Remove = 2
+};
 class ThreadPools {
 private:
   std::vector<std::thread> threads;
@@ -110,95 +115,81 @@ namespace syntax {
   }
 }
 namespace caching {
+  // >= 0 ? GOOD : BAD
   enum Status : int8_t {
     Pending = 0,
     Ready = 1,
     NoFile = -1,
     CantGetSize = -2,
     CantRead = -3,
-    CantAllocate = -4
+    CantAllocate = -4,
+    AST_Failed = -5
   };
-  // I allocate such buffer |----|-| , where the end is syntaxPartials
-  struct dataStruct {
-    // >= 0 ? GOOD : BAD
-    char* const pointer;
-    /**
-     * filename is a heap allocated string...
-     */
-    const char* const filename;
-    const uint32_t mainChunkSize;
-    // whenever streaming worker gets some task, cache already is set to at least 1 and shouldn't be touched when workers picks it.
-    uint16_t busyLevel = 1;
-    const uint8_t syntaxPartialsSize;
-    int8_t status = Status::Pending;
-    // it creates a dummy. caching::dataMap needs to have a sign that file is BEING cached right now.
-    dataStruct(): pointer(nullptr), filename(nullptr), mainChunkSize(0), syntaxPartialsSize(0) {};
-    dataStruct(const std::string& filenameReference): 
-      pointer(nullptr),
-      filename(
-        static_cast<const char*>(
-          std::memcpy(
-            new char[filenameReference.size() + 1],
-            filenameReference.c_str(),
-            filenameReference.size() + 1
-          )
-        )
-      ),
-      mainChunkSize(0),
-      syntaxPartialsSize(0)
-    {}
-    inline bool isCachedInMap() const noexcept {
-      return filename;
+  namespace data {
+    struct perhaps_streamed {
+      // if not cached yet - nullptr
+      char* const pointer;
+      /**
+       * filename is a heap allocated string... Nullptr -> cache is streamed and not saved in dataMap
+       */
+      const char* const filename;
+      const uint32_t size;
+      // whenever streaming worker gets some task, cache already is set to at least 1 and shouldn't be touched when workers picks it.
+      uint16_t busyLevel = 1;
+      Status status = Status::Pending;
+      // it creates a dummy. caching::dataMap needs to have a sign that file is BEING cached right now.
+      perhaps_streamed(): pointer(nullptr), filename(nullptr), size(0) {};
+      perhaps_streamed(const std::string& filenameReference): 
+        pointer(nullptr),
+        filename(
+            static_cast<const char*>(
+              std::memcpy(
+                new char[filenameReference.size() + 1],
+                filenameReference.c_str(),
+                filenameReference.size() + 1
+                )
+              )
+            ),
+        size(0)
+      {}
+      inline bool isNotStreamed() const noexcept {
+        return filename;
+      }
+      // after caching::map.emplace I get a string and set it
+      inline void Init(char* const chunkPointer, uint32_t mainChunkSizeParam) {
+        // I do these SCARY casts just because constructor creates a DUMMY. Init function actually makes dummy usable 
+        *const_cast<char**>(&pointer) = chunkPointer;
+        *const_cast<uint32_t*>(&size) = mainChunkSizeParam;
+        status = Status::Ready;
+      }
+      ~perhaps_streamed(){
+        delete filename;
+        delete pointer;
     }
-    // after caching::map.emplace I get a string and set it
-    inline void Init(char* const syntaxPartialsParam, uint8_t syntaxPartialsSizeParam, uint32_t mainChunkSizeParam) {
-      // I do these SCARY casts just because constructor creates a DUMMY. Init function actually makes dummy usable 
-      *const_cast<char**>(&pointer) = syntaxPartialsParam;
-      *const_cast<uint8_t*>(&syntaxPartialsSize) = syntaxPartialsSizeParam;
-      *const_cast<uint32_t*>(&mainChunkSize) = mainChunkSizeParam;
-      status = Status::Ready;
-    }
-    ~dataStruct(){
-      delete filename;
-      delete pointer;
-    }
-  };
-  using dataMapType = tbb::concurrent_hash_map<std::string, dataStruct*>;
+    };
+    struct AST_Item {
+      uint32_t offset;
+      uint32_t length;
+      // here "Remove" CAN'T appear, because removing option exists for something MUCH LESS DYNAMIC.
+      Action purpose;    
+    };
+    // streamed templates can't use optimization
+    struct full : public perhaps_streamed {
+      std::vector<AST_Item>* AST = nullptr;
+      tbb::mutex AST_Mutex;
+      bool AST_Ready = false;
+      bool shouldNotifyJSAboutAST;
+      full(const std::string& templateName, bool waitForAST) : perhaps_streamed(templateName), shouldNotifyJSAboutAST(waitForAST) {}
+    };
+  }
+  using dataMapType = tbb::concurrent_hash_map<std::string, data::perhaps_streamed*>;
   extern dataMapType dataMap;
   // As it is created with unlimited queue - NonBlockingCall is not a worry
   extern Napi::ThreadSafeFunction emitter;
   // I use libuv ONLY for caching
   namespace libuv {
-    struct dataStruct {
-      uv_work_t uv_request; // when instance get deleted - request data as well;
-      const syntax::dataStruct* const syntaxStruct;
-      caching::dataStruct* const cache;
-      const std::string templateName;
-      // when true - only FULL file is cached. Otherwise it depends on maxChunkSize
-      const bool shouldNotifyJS;
-      inline void notifyCompletion(Status status);
-      inline void notifyJS(){
-        caching::emitter.NonBlockingCall(
-          [cache = this->cache](Napi::Env env, Napi::Function jsCallback) {
-            jsCallback.Call({
-              Napi::String::New(env, cache->filename),
-              Napi::Number::New(env, cache->status)
-            });
-          }
-        );
-      }
-      dataStruct(
-          const syntax::dataStruct* const syntax,
-          caching::dataStruct* cache,
-          std::string templateName,
-          bool shouldNotifyJS = false
-          ) :
-        syntaxStruct(syntax),
-        cache(cache),
-        templateName(std::move(templateName)),
-        shouldNotifyJS(shouldNotifyJS) {}
-    };
-  void ExecuteWork(uv_work_t *req);
+    struct dataStruct; 
+    void ExecuteWork(uv_work_t *req);
   void Finalize(uv_work_t *req, int status);
   inline void enqueue(uv_work_t* request){
     uv_queue_work(
@@ -213,71 +204,196 @@ namespace caching {
 namespace streaming {
   extern ThreadPools workers;
   namespace inclusion {
-    // abstract class
-    class placeholder {
-    protected: 
-      placeholder() = default;
-    public:
-      virtual bool hasNext() const noexcept {
-        return false;
-      }
-      virtual Napi::Object next() const {
-        return {};
-      }
+    struct stateStruct {
+      Action action = Action::JustRead;
+      uint8_t syntaxPartialsSize = 0;
+      uint32_t processedInputSize = 0;
+      uint32_t inputSize;
+      //not necessarily valid.
+      cross_os::descriptor_t input;
+      caching::data::perhaps_streamed* chunk;
+      char* chunk_dynamicPointer;
+      stateStruct(caching::data::perhaps_streamed* chunk) : chunk(chunk) {
+        if(!chunk->isNotStreamed()) {
+          input = cross_os::OpenFileRead(chunk->filename);
+          if(input == cross_os::invalid_descriptor_t) {
+            //TODO
+          }
+          {
+            int64_t inputSizeVar = cross_os::GetFileSize(input);
+            if(inputSizeVar == cross_os::invalid_file_size){
+              //TODO
+            }
+            inputSize = inputSizeVar;
+          }
+
+        } else {
+          inputSize = chunk->size;
+          input = cross_os::invalid_descriptor_t;
+        }
+
+      };
+      /**
+       * This is a pointer to where the stream can start consuming text.
+       **/
+      char* chunk_writablePointer = nullptr; 
+      inline char* chunk_movePointerForward(uint16_t bytesDistance) noexcept;
+      inline uint16_t chunk_pointerMovedDistance() const noexcept;
+      inline char* chunk_findTemplateSyntax(const std::string& symbols) const noexcept;
+      inline char* chunk_findTemplateSyntax(const std::string& symbols, uint8_t maxLength) const noexcept;
+      inline void copySyntaxPartials(uint8_t offsetFromEnd) {
+        std::memcpy(chunk->pointer, chunk->pointer + chunk->size - offsetFromEnd, offsetFromEnd);
+      };
+      inline bool hasFinished() const noexcept {
+        
+      };
     };
-    class placeholder_single : public placeholder {
-      Napi::Object value;
-      bool hasNext() const noexcept override {
-        static bool has = true;
-        bool currentValue = has;
-        return (has = false, currentValue);
+    struct level {
+      enum StatePreparationStatus : uint8_t {
+        StillUsable = 0,
+        LevelFinished = 1,
+        AwaitingCache = 2
+      };
+      stateStruct currentState;
+      level(Napi::Object param) : currentState(param) {
+        
       }
-      Napi::Object next() const override {
-        return value;
-      }
+      // returns true if next actually exists. If no -> move to the previous position in stack inside streaming::dataStruct
+      inline virtual StatePreparationStatus prepareNext() {
+        return StatePreparationStatus::StillUsable;
+      };
     };
-    class placeholder_multi: public placeholder {
+    struct level_multiple: public level {
       Napi::Array values;
       mutable uint8_t id = 0;
-      bool hasNext() const noexcept override {
-        return values.Length() > id;
-      }
-      Napi::Object next() const override {
-        uint8_t currentId = id++;
-        return values[currentId].As<Napi::Object>();
-      }
+      inline StatePreparationStatus prepareNext() override {
+        return StatePreparationStatus::StillUsable;
+      };
     };
   }
-  class process {
-  public:
-    static void workerCB(){
-      
+  namespace data {
+    class BookedCaches {
+      static constexpr uint8_t cacheTotalAlignment = (
+        sizeof(uint16_t) + sizeof(caching::data::perhaps_streamed*)
+      );
+      // it is like this ([num,cache][num,cache][num,cache]).
+      // Just because structs forse alignment and I don't want 7-byte padding
+      void* pointer;
+    public:
+      BookedCaches(uint16_t amount) 
+        : pointer(
+            std::memset(std::malloc(amount * cacheTotalAlignment), 0, amount * cacheTotalAlignment)
+          ) {}
+      ~BookedCaches(){
+        std::free(pointer);
+      }
+      template<typename TYPE = uint16_t>
+      inline TYPE getCacheRemainingUsages(uint16_t position){
+        return *(static_cast<uint16_t*>(pointer) + position * cacheTotalAlignment);
+      }
+      inline caching::data::perhaps_streamed*& getCache(uint16_t position){
+        return *(static_cast<caching::data::perhaps_streamed**>(pointer) + position * cacheTotalAlignment + 2);
+      }
+    };
+    class MinBase {
+    public:
+      const syntax::dataStruct* const syntaxStruct;
+      const Napi::ThreadSafeFunction tsfn;
+      virtual void markConsumableChunk() = 0;
+      virtual void sendChunks() = 0;
+      virtual void threadCB() = 0;
+    static void Finalizer(Napi::Env, MinBase* task, void*){
+        delete task;
     }
-  };
-  class fsProcess: public process {};
-  struct dataStruct {
-    const syntax::dataStruct* const patternStruct;
-    Napi::Reference<Napi::Object> params;
-    Napi::Reference<Napi::Array> files;
-    const Napi::ThreadSafeFunction tsfn;
-    std::vector<caching::dataStruct*> chunks;
-    std::stack<inclusion::placeholder> includes;
-    dataStruct(
-        const syntax::dataStruct* const patternStruct,
-        Napi::Object params,
-        Napi::Array files,
-        Napi::ThreadSafeFunction tsfn
-    ) :
-      patternStruct(patternStruct),
-      params(Napi::Persistent(params)),
-      files(Napi::Persistent(files)),
-      tsfn(tsfn),
-      chunks(files.Length(), nullptr)
-    {}
-  };
+    protected:
+      virtual ~MinBase(){}
+      MinBase(
+          Napi::Env env,
+          Napi::Function& jsCallback,
+          const syntax::dataStruct* const syntaxStruct,
+          caching::data::perhaps_streamed* const initialTemplate
+        ) :
+        syntaxStruct(syntaxStruct),
+        tsfn(Napi::ThreadSafeFunction::New(
+          env,
+          jsCallback,
+          "Streaming js callback",
+          0,
+          1,
+          this,
+          Finalizer,
+          (void*) nullptr
+        ))
+      {}
+    };
+    class Base : public MinBase {
+    public:
+      Napi::Reference<Napi::Object> params;
+      Napi::Reference<Napi::Array> inputsList;
+      BookedCaches bookedCaches;
+      std::stack<inclusion::level> recursiveInclusions;
+    protected:
+      virtual ~Base(){}
+      static void Finalizer(Napi::Env, Base* task, void*){
+        delete task;
+      }
+      Base(
+          Napi::Object& paramsArg,
+          Napi::Array& files,
+          Napi::Env env,
+          Napi::Function& jsCallback,
+          const syntax::dataStruct* const syntaxStruct,
+          caching::data::perhaps_streamed* const initialTemplate
+        ) :
+        MinBase(env, jsCallback, syntaxStruct, initialTemplate),
+        bookedCaches(files.Length())
+      {
+        bookedCaches.getCache(0) = initialTemplate;
+        bookedCaches.getCacheRemainingUsages<uint16_t&>(0) = 0;
+        recursiveInclusions.push(params.Value());
+      }
+    };
+    class forJS : public Base {
+      Napi::Array chunks;
+      forJS(
+          Napi::Object& paramsArg,
+          Napi::Array& files,
+          Napi::Env env,
+          Napi::Function& jsCallback,
+          const syntax::dataStruct* const syntaxStruct,
+          caching::data::perhaps_streamed* const initialTemplate
+      ) : Base(paramsArg,files, env, jsCallback, syntaxStruct,initialTemplate)  {}
+      void threadCB() override;
+      void markConsumableChunk() override;
+      void sendChunks() override;
+    };
+    class forFS : public Base {
+      std::vector<char*> chunks;
+      cross_os::descriptor_t output;
+    public:
+      forFS(
+          cross_os::descriptor_t output,
+          Napi::Object& paramsArg,
+          Napi::Array& files,
+          Napi::Env env,
+          Napi::Function jsCallback,
+          const syntax::dataStruct* const syntaxStruct,
+          caching::data::perhaps_streamed* const initialTemplate
+      ) : Base(paramsArg,files, env, jsCallback, syntaxStruct,initialTemplate), output(output)  {}
+      void threadCB() override;
+      void markConsumableChunk() override;
+      void sendChunks() override;
+    };
+    class forOptimization : public MinBase {
+      streaming::inclusion::stateStruct state;
+      void threadCB() override;
+      void markConsumableChunk() override;
+      void sendChunks() override;
+    };
+  }
   // I use these tasks ONLY when corresponding cache in caching::dataMap is locked with accessor. That's why here I use more unsafe but fast unordered_map
-  extern tbb::concurrent_unordered_map<caching::dataStruct*, std::vector<dataStruct*>> cacheDependentTasks;
-  inline void enqueueCacheDependentTasks(caching::dataStruct* cache){
+  extern tbb::concurrent_unordered_map<caching::data::perhaps_streamed*, std::vector<data::Base*>> cacheDependentTasks;
+  inline void enqueueCacheDependentTasks(caching::data::perhaps_streamed* cache){
     auto it = cacheDependentTasks.find(cache);
     if(it != cacheDependentTasks.end()){
      // for(dataStruct* task : it->second){
@@ -289,136 +405,39 @@ namespace streaming {
     cacheDependentTasks.unsafe_erase(cache);
   }
 }
+struct caching::libuv::dataStruct  {
+      uv_work_t uv_request; // when instance get deleted - request data as well;
+      void* const cacheOrStreamState; // using it I will find out its size, if it should be streamed. If should -> 
+      const streaming::data::MinBase* const initiativeTask; // if no such - it is a .cache call from js.
+      // when true - only FULL file is cached. Otherwise it depends on maxChunkSize
+      inline void notifyCompletion(Status status);
+      dataStruct(
+          streaming::inclusion::stateStruct* state,
+          const streaming::data::MinBase* const initiativeTask
+      ) : cacheOrStreamState(state), initiativeTask(initiativeTask) {}
+      dataStruct(
+          caching::data::perhaps_streamed* cache,
+          const streaming::data::MinBase* const initiativeTask
+      ) : cacheOrStreamState(cache), initiativeTask(initiativeTask) {}
+    };
+
 inline void caching::libuv::dataStruct::notifyCompletion(caching::Status status){
   // here, compared to its derived class, there is no thread waiting for caching to end. That's why no offloading can be done.
   caching::dataMapType::accessor accessor;
   caching::dataMap.find(accessor, cache->filename);
   cache->status=status;
-  if(cache->busyLevel) streaming::enqueueCacheDependentTasks(cache);
+  if(shouldNotifyJS) notifyJS();
+  if(cache->busyLevel) {
+    if(status>0) return streaming::enqueueCacheDependentTasks(cache);
+    auto it = streaming::cacheDependentTasks.find(cache);
+    if(it == streaming::cacheDependentTasks.end()) return;
+    for(streaming::data::Base* task : it->second){
+      task->tsfn.NonBlockingCall([status](Napi::Env env, Napi::Function jsCallback){
+        jsCallback.Call({Napi::Number::New(env, status)});
+      });
+    }
+    streaming::cacheDependentTasks.unsafe_erase(cache);
+  }
 }
 
 extern uint32_t maxChunkSize;
-
-//namespace processStackItems {
-//  class Base {
-//  protected:
-//    // abstract class
-//    Base() = default;
-//  // these properties are connected to solely Single->Several polymorphism
-//  public:
-//    bool hasNextQueuedProcess = true;
-//    /**
-//     *  before getting next value ALWAYS check if it "hasNextQueuedProcess"
-//     * */
-//    virtual Napi::Object nextQueuedProcess();
-//  public:
-//
-//  };
-//  // Single recursive include of a template (js object) + template is already cached
-//  class Single : public Base {
-//  private:
-//    Napi::Object data;
-//  public:
-//    Napi::Object nextQueuedProcess() override {
-//      return (hasNextQueuedProcess=true, data);
-//    }
-//    Single(Napi::Object data) : data(data) {}
-//  };
-//  // same as above, but template is too big and is streamed
-//  class SingleFS : public Single {
-//    
-//  };
-//  // several templates are included at once (js array)
-//  class Several : public Base {
-//    Napi::Array data;
-//  public:
-//    Several(Napi::Array param) : data(param) {
-//      if(!data.Length()){
-//        hasNextQueuedProcess = false;
-//      }
-//    }
-//    Napi::Object nextQueuedProcess() override {
-//      static int16_t leftValues = data.Length();
-//      if(--leftValues <= 0){
-//        hasNextQueuedProcess = false;
-//      }
-//      return data.Get(data.Length() - leftValues).As<Napi::Object>();
-//    };
-//  };
-//}
-//namespace workers {
-//  class Stream {
-//    // first argument from js
-//    Napi::ObjectReference params;
-//    // second argument from js
-//    Napi::ObjectReference files;
-//    // callback from js
-//    Napi::ThreadSafeFunction tsfn;
-//
-//    // on creation I loop over "files" and for each filename insert a corresponding pointer from caching::map. If there is no such -> nullptr. When I get to nullptr, I check its size
-//    std::vector<caching::dataStruct*> chunks;
-//
-//    // This is meant for recursive includes
-//    std::stack<processStackItems::Base> processes;
-//
-//    // All templates should follow same syntax
-//    const syntax::dataStruct* patternStruct;
-//  };
-//  class BaseStream {
-//    protected:	
-//      int input;
-//    public:
-//      const syntax::dataStruct* const patternStruct;
-//    protected:
-//      /*This is a pointer to position of chunk's first byte. It's set at class initialization and is not meant to change.*/
-//      Napi::ThreadSafeFunction tsfn;
-//      BaseStream(const syntax::dataStruct* patternStr, const std::string inputPath, Napi::ThreadSafeFunction tsfn);
-//    public:
-//
-//      virtual ~BaseStream();
-//
-//      inline virtual void write(const char* source, uint32_t size);
-//      virtual void flushChunks();
-//      inline virtual void insert(char* keyword, uint8_t size);
-//
-//      inline char* chunk_movePointerForward(uint16_t bytesDistance) noexcept;
-//      inline uint16_t chunk_pointerMovedDistance() const noexcept;
-//      inline char* chunk_findTemplateSyntax(const std::string& symbols) const noexcept;
-//      inline char* chunk_findTemplateSyntax(const std::string& symbols, uint8_t maxLength) const noexcept;
-//      inline void copySyntaxPartials(uint8_t offsetFromEnd);
-//      inline bool hasFinished() const noexcept;
-//      inline const char* chunk_getInitialPointer() const noexcept;
-//      inline void readNewChunk(); 
-//  };
-//  enum Action {
-//    None = 0 /*It means that template is just being read and streamed to destination (js/fs)*/,
-//    Inserting = 1 /*Chunk ends, prefix and action-symbols were found, but the ending symbols are not in this chunk and identifier to be "inserted" in template is split by a stream. Its part is saved to additionalBuffer and on chunk reread additionalBuffer is copied to the beginning of chunk to "combine" with a second part. */,
-//    Removing = 2  /*Don't push to stream chunks until the "end" is found*/
-//  };
-//
-//  class Base {
-//  public:
-//    Napi::ThreadSafeFunction tsfn;
-//    syntax::dataStruct* patternStruct;
-//    uint32_t inputSize, bytesRead = 0;
-//    // if it is - I can remove it directly with "delete". If it IS - try to remove it from cache::map
-//    bool cacheIsLocal;
-//    char *chunk_currentPointer;
-//    /**
-//     * This is a pointer to where the stream can start consuming text.
-//     * */
-//    char* chunk_writablePointer = nullptr; 
-//    /*
-//       *  This is not just a size of a chunk allocated, but an amount of bytes read the last time. If files is smaller than "maxChunkSize", then chunkSize is same as an allocated size.
-//       * */
-//    uint32_t chunk_size;
-//    /*
-//       *  It's a size of string, copied to syntaxPartials between chunk reads. When 0 - syntaxPartials is still allocated, but it is not in use.
-//       * */
-//    uint8_t syntaxPartialsSize;
-//    Action action = Action::None;
-//  };
-//  class JS : public Base {
-//    static void ThreadPool();
-//  };
-//}

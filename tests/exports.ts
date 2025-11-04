@@ -15,7 +15,6 @@ type JSStreamCb = (
 )|(
   (data: undefined, release: undefined, error: Error|undefined)=>void
 )
-var emitter = new EventEmitter();
 export enum Status {
     Ready = 1,
     NoFile = -1,
@@ -23,17 +22,18 @@ export enum Status {
     CantRead = -3,
     CantAllocate = -4
 }
-export function JSCache(name: string, cb: (status: Status)=>void): void{
-  if(!addon.cache(name)) emitter.on(name, cb); else cb(1);
-};
-
+export type templatesList = (string | [string, number])[]; // here "number" in tuple means "how many times at least this template will be used throughout the function". Great for optimizing memory usage (as soon as used all times -> cache tries to get deleted). 0 (default) == no limit and keep in memory until function ends
 export var addon: {
-  streamToFS(params: FSStreamParams, templates: string[], output:string, callback: ()=>void): void;
-  setCachingEmitter(emit: (key:string, ...args: any[])=>void): void
+  streamToFS(params: FSStreamParams, templates: templatesList, output:string, callback: ()=>void): void;
   // if you NEVER call "cache" - set second param to 0.
   createThreadPools(streamingWorkersAmount: number): void;
   Stop(): void;
-  streamToJS(params: JSStreamParams, templaets: string[], callback: JSStreamCb): void;
+  /**
+  * This is the best way to ensure your template has right syntax and get a notification if not. 
+  * It performs all checks and, if "save == true", saves it to globally-accessible caches as the whole files with in-memory optimization (just save WHERE syntax does WHAT). If save == false, file is streamed with chunks staying within maxChunkSize.
+  * */
+  compile(filename: string, save: boolean, cb: (status: Status)=>void): void;
+  streamToJS(params: JSStreamParams, templates: templatesList, callback: JSStreamCb): void;
   setSyntax(params: {
     pattern: string,
     prefix: string;
@@ -49,9 +49,8 @@ export var addon: {
   * */
   clearCache(name: string): boolean;
   /**
-   * @returns true if template was JUST cached by THIS function call, and FALSE if it was cached by another thread JUST NOW or a while ago. Returning "false" doesn't mean that function failed.
+   * It doesn't notify you when it finishes. It brings a lot of unwanted overhead + you should always test your template with "compile" before. This way problem can only happen due to memory overflowing, which can't be prevented.
    * @throws error if something failed.
   * */
-  cache(name: string): boolean; 
+  cache(name: string): void; 
 } = require("../build/Release/addon.node")
-addon.setCachingEmitter((name, status)=>{console.log("name: ", name);emitter.emit(name, status)});
