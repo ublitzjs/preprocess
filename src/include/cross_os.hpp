@@ -4,7 +4,7 @@
 #include <Windows.h>
 namespace cross_os {
   using descriptor_t = HANDLE;
-  extern descriptor_t invalid_descriptor_t;
+  extern descriptor_t invalid_descriptor;
   inline descriptor_t OpenFileRead(const char* str) {
     return CreateFile(str,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
   }
@@ -22,7 +22,8 @@ namespace cross_os {
     };
     return fileSize; 
   }
-  inline bool ReadFile(descriptor_t descriptor, void* destination, uint64_t size){
+  constexpr int8_t ReadFailed = 0;
+  inline int32_t ReadFile(descriptor_t descriptor, void* destination, uint64_t size){
     return ::ReadFile(
       descriptor,
       destination,
@@ -38,7 +39,7 @@ namespace cross_os {
 #include <sys/stat.h>
 namespace cross_os {
   using descriptor_t = int;
-  extern descriptor_t invalid_descriptor_t;
+  extern descriptor_t invalid_descriptor;
   inline descriptor_t OpenFileRead(const char* str) {
     return open(str, O_RDONLY);
   }
@@ -49,6 +50,7 @@ namespace cross_os {
     close(descriptor);
   }
   constexpr int8_t invalid_file_size = -1;
+  constexpr int8_t ReadFailed = -1;
   inline int64_t GetFileSize(descriptor_t descriptor){
     struct stat inputStats;
     if (fstat(descriptor, &inputStats)) {
@@ -56,7 +58,7 @@ namespace cross_os {
     };
     return inputStats.st_size;
   }
-  inline bool ReadFile(descriptor_t descriptor, void* destination, uint64_t size){
+  inline int32_t ReadFile(descriptor_t descriptor, void* destination, uint64_t size){
     return read(descriptor, destination, size) != -1;
   }
 }

@@ -1,5 +1,4 @@
 import {createRequire} from "node:module";
-import {EventEmitter} from "node:events"
 var require = createRequire(import.meta.url);
  
 type FSStreamParams = {
@@ -22,7 +21,12 @@ export enum Status {
     CantRead = -3,
     CantAllocate = -4
 }
-export type templatesList = (string | [string, number])[]; // here "number" in tuple means "how many times at least this template will be used throughout the function". Great for optimizing memory usage (as soon as used all times -> cache tries to get deleted). 0 (default) == no limit and keep in memory until function ends
+/**
+ * first string in tuple - name of template.
+* here first "number" in tuple means "how many times at least this template will be used throughout the function". Great for optimizing memory usage (as soon as used all times -> cache tries to get deleted). 0 (default) == no limit and keep in memory until function ends
+  third boolean in tuple - if template is "AST optimized". It can happen only after using .compile with "string" as a "save" param.
+* */
+export type templatesList = (string | [string, number, boolean?])[]; 
 export var addon: {
   streamToFS(params: FSStreamParams, templates: templatesList, output:string, callback: ()=>void): void;
   // if you NEVER call "cache" - set second param to 0.
@@ -30,9 +34,9 @@ export var addon: {
   Stop(): void;
   /**
   * This is the best way to ensure your template has right syntax and get a notification if not. 
-  * It performs all checks and, if "save == true", saves it to globally-accessible caches as the whole files with in-memory optimization (just save WHERE syntax does WHAT). If save == false, file is streamed with chunks staying within maxChunkSize.
+  * It performs all checks and, if "save == true", saves it to globally-accessible caches as the whole files with in-memory optimization (just save WHERE syntax does WHAT). If save == false, file is streamed with chunks staying within maxChunkSize. if save = string - saves your template with optimized AST format in the beginning. So in production you can take your "src" templates, optimize to some folder and delete other ones - speed boost, less processing headache, and if deleted previous - more disk space.
   * */
-  compile(filename: string, save: boolean, cb: (status: Status)=>void): void;
+  compile(filename: string, save: boolean | string, cb: (status: Status)=>void): void;
   streamToJS(params: JSStreamParams, templates: templatesList, callback: JSStreamCb): void;
   setSyntax(params: {
     pattern: string,

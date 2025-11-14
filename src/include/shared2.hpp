@@ -1,6 +1,7 @@
 #pragma once
 #include <regex>
 #include <functional>
+#include <atomic>
 #include <condition_variable>
 #include <utility>
 #include <uv.h>
@@ -117,8 +118,9 @@ namespace syntax {
 namespace caching {
   // >= 0 ? GOOD : BAD
   enum Status : int8_t {
-    Pending = 0,
-    Ready = 1,
+    AST_Ready = 2,
+    NoAST_Yet = 1,
+    PendingDiskRead = 0,
     NoFile = -1,
     CantGetSize = -2,
     CantRead = -3,
@@ -126,17 +128,16 @@ namespace caching {
     AST_Failed = -5
   };
   namespace data {
+    // only status (and AST-related stuff in full cache) should be accessed in thread-safe manner by blocking dataMap. Everything else - only caching thread touches.
     struct perhaps_streamed {
       // if not cached yet - nullptr
       char* const pointer;
-      /**
-       * filename is a heap allocated string... Nullptr -> cache is streamed and not saved in dataMap
-       */
       const char* const filename;
       const uint32_t size;
       // whenever streaming worker gets some task, cache already is set to at least 1 and shouldn't be touched when workers picks it.
       uint16_t busyLevel = 1;
-      Status status = Status::Pending;
+      Status status = Status::PendingDiskRead;
+      bool canHaveAST = false; // if true - it is either "precompiled" and read (entirely or streamed) from file with syntax described in it already OR the file is cached entirely and will have all syntax saved as soon as it appears to get processed
       // it creates a dummy. caching::dataMap needs to have a sign that file is BEING cached right now.
       perhaps_streamed(): pointer(nullptr), filename(nullptr), size(0) {};
       perhaps_streamed(const std::string& filenameReference): 
@@ -152,34 +153,30 @@ namespace caching {
             ),
         size(0)
       {}
-      inline bool isNotStreamed() const noexcept {
-        return filename;
-      }
-      // after caching::map.emplace I get a string and set it
-      inline void Init(char* const chunkPointer, uint32_t mainChunkSizeParam) {
+      inline bool SetData(char* const chunkPointer, uint32_t mainChunkSizeParam){
         // I do these SCARY casts just because constructor creates a DUMMY. Init function actually makes dummy usable 
         *const_cast<char**>(&pointer) = chunkPointer;
         *const_cast<uint32_t*>(&size) = mainChunkSizeParam;
-        status = Status::Ready;
+        return chunkPointer;
       }
       ~perhaps_streamed(){
         delete filename;
         delete pointer;
     }
     };
+    #pragma pack(push, 1) // less memory, better to write to file.
     struct AST_Item {
-      uint32_t offset;
       uint32_t length;
-      // here "Remove" CAN'T appear, because removing option exists for something MUCH LESS DYNAMIC.
-      Action purpose;    
+      // no REMOVE state because such templates don't need to be analyzed.
+      bool isItForInterpolation;    
     };
-    // streamed templates can't use optimization
-    struct full : public perhaps_streamed {
-      std::vector<AST_Item>* AST = nullptr;
-      tbb::mutex AST_Mutex;
-      bool AST_Ready = false;
-      bool shouldNotifyJSAboutAST;
-      full(const std::string& templateName, bool waitForAST) : perhaps_streamed(templateName), shouldNotifyJSAboutAST(waitForAST) {}
+    #pragma pack(pop)
+
+    // when template is cached completely in map - it can be optimized in runtime or was read with optimization already in it. If it is streamed - it cannot be optimized in runtime but can be read from file with optimization in it.
+    struct perhaps_optimized : public perhaps_streamed {
+      std::vector<AST_Item> AST;
+      std::atomic<uint16_t> AST_CurrentAmount = 0;
+      perhaps_optimized(const std::string& templateName) : perhaps_streamed(templateName) {}
     };
   }
   using dataMapType = tbb::concurrent_hash_map<std::string, data::perhaps_streamed*>;
@@ -187,19 +184,24 @@ namespace caching {
   // As it is created with unlimited queue - NonBlockingCall is not a worry
   extern Napi::ThreadSafeFunction emitter;
   // I use libuv ONLY for caching
-  namespace libuv {
-    struct dataStruct; 
-    void ExecuteWork(uv_work_t *req);
-  void Finalize(uv_work_t *req, int status);
-  inline void enqueue(uv_work_t* request){
-    uv_queue_work(
-        uv_default_loop(),
-        request,
-        ExecuteWork,
-        Finalize
-        );
-  }
-  }
+  struct libuvDataStruct {
+    uv_work_t uv_request; // when instance get deleted - request data as well;
+    void* const cacheOrTask; // using it I will find out its size, if it should be streamed.
+  };
+
+  void cachingLibuvCB(uv_work_t* req);  // This function is queued when js calls .cache. 
+  //inline void enqueue(uv_work_t* request){
+  //  uv_queue_work(
+  //      uv_default_loop(),
+  //      request,
+  //      ExecuteWork,
+  //      TSFNFinalize
+  //      );
+  //}
+  
+  
+  //void*  - 
+  extern tbb::concurrent_unordered_map<caching::data::perhaps_streamed*, void*> temporaryCacheData;
 }
 namespace streaming {
   extern ThreadPools workers;
@@ -216,7 +218,7 @@ namespace streaming {
       stateStruct(caching::data::perhaps_streamed* chunk) : chunk(chunk) {
         if(!chunk->isNotStreamed()) {
           input = cross_os::OpenFileRead(chunk->filename);
-          if(input == cross_os::invalid_descriptor_t) {
+          if(input == cross_os::invalid_descriptor) {
             //TODO
           }
           {
@@ -229,7 +231,7 @@ namespace streaming {
 
         } else {
           inputSize = chunk->size;
-          input = cross_os::invalid_descriptor_t;
+          input = cross_os::invalid_descriptor;
         }
 
       };
@@ -245,7 +247,7 @@ namespace streaming {
         std::memcpy(chunk->pointer, chunk->pointer + chunk->size - offsetFromEnd, offsetFromEnd);
       };
       inline bool hasFinished() const noexcept {
-        
+        return inputSize == processedInputSize;
       };
     };
     struct level {
@@ -302,11 +304,15 @@ namespace streaming {
       virtual void markConsumableChunk() = 0;
       virtual void sendChunks() = 0;
       virtual void threadCB() = 0;
+      virtual bool shouldCacheWholeFile() = 0;
+      virtual void sendError(caching::Status, caching::data::perhaps_streamed*) = 0;
+      virtual inclusion::stateStruct& getCurrentState() = 0;
+      static void cachingLibuvCB(uv_work_t* req);
     static void Finalizer(Napi::Env, MinBase* task, void*){
         delete task;
     }
     protected:
-      virtual ~MinBase(){}
+      virtual ~MinBase() = 0; // it won't manage tsfn.Release
       MinBase(
           Napi::Env env,
           Napi::Function& jsCallback,
@@ -332,6 +338,25 @@ namespace streaming {
       Napi::Reference<Napi::Array> inputsList;
       BookedCaches bookedCaches;
       std::stack<inclusion::level> recursiveInclusions;
+      inclusion::stateStruct& getCurrentState() override {
+        return recursiveInclusions.top().currentState;
+      }
+      void cleanCaches(){
+        caching::data::perhaps_streamed* currentCachePointer;
+        for(uint8_t i = inputsList.Value().Length(); i>0; i--){
+          // if cache has ever been actually used OR has not been cleared yet
+          if(
+              !(currentCachePointer = bookedCaches.getCache(i))
+          ) continue;
+          caching::dataMapType::accessor accessor;
+          caching::dataMap.find(accessor, currentCachePointer->filename);
+          // if cache is not booked 
+          if(!currentCachePointer->busyLevel--){
+            caching::dataMap.erase(accessor);
+            delete currentCachePointer;
+          }
+        }
+      }
     protected:
       virtual ~Base(){}
       static void Finalizer(Napi::Env, Base* task, void*){
@@ -355,6 +380,7 @@ namespace streaming {
     };
     class forJS : public Base {
       Napi::Array chunks;
+    public:
       forJS(
           Napi::Object& paramsArg,
           Napi::Array& files,
@@ -363,6 +389,9 @@ namespace streaming {
           const syntax::dataStruct* const syntaxStruct,
           caching::data::perhaps_streamed* const initialTemplate
       ) : Base(paramsArg,files, env, jsCallback, syntaxStruct,initialTemplate)  {}
+      ~forJS(){
+        this->cleanCaches();
+      }
       void threadCB() override;
       void markConsumableChunk() override;
       void sendChunks() override;
@@ -385,59 +414,28 @@ namespace streaming {
       void sendChunks() override;
     };
     class forOptimization : public MinBase {
+      public:
       streaming::inclusion::stateStruct state;
+      const bool saveCacheInMap;
+      forOptimization(
+          bool saveCacheInMap,
+          Napi::Env env,
+          Napi::Function& jsCallback,
+          const syntax::dataStruct* const syntaxStruct,
+          caching::data::perhaps_streamed* const initialTemplate
+        ) : MinBase(env, jsCallback, syntaxStruct, initialTemplate), saveCacheInMap(saveCacheInMap) , state(initialTemplate){}
       void threadCB() override;
+      void libuvCB() {
+        
+      }
       void markConsumableChunk() override;
       void sendChunks() override;
+      bool shouldCacheWholeFile() override {return saveCacheInMap;}
+      inclusion::stateStruct& getCurrentState() override {
+        return state;
+      }
+
     };
   }
-  // I use these tasks ONLY when corresponding cache in caching::dataMap is locked with accessor. That's why here I use more unsafe but fast unordered_map
-  extern tbb::concurrent_unordered_map<caching::data::perhaps_streamed*, std::vector<data::Base*>> cacheDependentTasks;
-  inline void enqueueCacheDependentTasks(caching::data::perhaps_streamed* cache){
-    auto it = cacheDependentTasks.find(cache);
-    if(it != cacheDependentTasks.end()){
-     // for(dataStruct* task : it->second){
-     //   workers.enqueue([]{
-     //       // here call processing function
-     //   });
-     // }
-    }
-    cacheDependentTasks.unsafe_erase(cache);
-  }
 }
-struct caching::libuv::dataStruct  {
-      uv_work_t uv_request; // when instance get deleted - request data as well;
-      void* const cacheOrStreamState; // using it I will find out its size, if it should be streamed. If should -> 
-      const streaming::data::MinBase* const initiativeTask; // if no such - it is a .cache call from js.
-      // when true - only FULL file is cached. Otherwise it depends on maxChunkSize
-      inline void notifyCompletion(Status status);
-      dataStruct(
-          streaming::inclusion::stateStruct* state,
-          const streaming::data::MinBase* const initiativeTask
-      ) : cacheOrStreamState(state), initiativeTask(initiativeTask) {}
-      dataStruct(
-          caching::data::perhaps_streamed* cache,
-          const streaming::data::MinBase* const initiativeTask
-      ) : cacheOrStreamState(cache), initiativeTask(initiativeTask) {}
-    };
-
-inline void caching::libuv::dataStruct::notifyCompletion(caching::Status status){
-  // here, compared to its derived class, there is no thread waiting for caching to end. That's why no offloading can be done.
-  caching::dataMapType::accessor accessor;
-  caching::dataMap.find(accessor, cache->filename);
-  cache->status=status;
-  if(shouldNotifyJS) notifyJS();
-  if(cache->busyLevel) {
-    if(status>0) return streaming::enqueueCacheDependentTasks(cache);
-    auto it = streaming::cacheDependentTasks.find(cache);
-    if(it == streaming::cacheDependentTasks.end()) return;
-    for(streaming::data::Base* task : it->second){
-      task->tsfn.NonBlockingCall([status](Napi::Env env, Napi::Function jsCallback){
-        jsCallback.Call({Napi::Number::New(env, status)});
-      });
-    }
-    streaming::cacheDependentTasks.unsafe_erase(cache);
-  }
-}
-
 extern uint32_t maxChunkSize;

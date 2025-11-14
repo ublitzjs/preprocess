@@ -1,13 +1,10 @@
 #include "./include/shared2.hpp"
 #include "./include/cross_os.hpp"
-void caching::libuv::Finalize(uv_work_t* req, int){
-  delete static_cast<caching::libuv::dataStruct*>(req->data);
-}
 void caching::libuv::ExecuteWork(uv_work_t *req){
   using Status = caching::Status;
   caching::libuv::dataStruct& workerData = *static_cast<caching::libuv::dataStruct*>(req->data);
   cross_os::descriptor_t descriptor = cross_os::OpenFileRead(workerData.templateName.c_str());
-  if (descriptor == cross_os::invalid_descriptor_t) {
+  if (descriptor == cross_os::invalid_descriptor) {
     return workerData.notifyCompletion(Status::NoFile);
   }
   int64_t fileSize = cross_os::GetFileSize(descriptor);
