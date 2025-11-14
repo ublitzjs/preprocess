@@ -1,29 +1,6 @@
 ### cache can be acquired in libuv worker ONLY in order to synchronize disk usage with NodeJS application. Always when queing caching job I create a cache dummy (it depends whether it is global or not).
 
 
-### libuv worker can be started in several ways: 
-  - if I call addon.cache from js. In this case I:
-      1)  create a dummy ONLY GLOBALLY
-      2)  when template is waiting to be cached, other tasks can subscribe to wait for it to finish AND immediately be queued in thread pool to handle tasks. 
-
-  - if I call addon.compile. it is not really meant for highly parallel usage of a cache, but still needs to handle this anyways. 
-      if cache exists AND is optimized - just call js callback and quit;
-      if cache exists but NOT optimized - queue processing, which WILL save AST globally.
-      if cache dummy exists but not cached yet - throws error. Why? .compile should be called first for templates
-      if no cache
-        1) get file descriptor
-        2) get file size
-        3) create optimization task container and push all data to it
-        4) queue libuv (which will globally save cache if save param == true) and which will queue processing
-
-  - if I call either addon.streamToJS or addon.streamToFS
-      1) try to get cache from global.
-        if could not - get file descriptor, get file size. 
-      1) get file descriptor
-      2) get file size
-      create task container, emplace state of current template inside with acquired data. 
-
-
 
 libuv callbacks are different for 3 cases:
   - for .cache from js. Error handling may seem cumbersome, but function .cache is meant to be used when template is valid and can be read to memory.
@@ -92,4 +69,50 @@ If some task finds cache in status 2 - it uses a std::atomic from cache itself t
 
 
 
-### Processing flow of certain functions
+### Processing flow of certain functions in js
+.cache function
+lock accessor in global map and try to get cache
+    if does not exist:
+        1. check syntax
+        2. create cache dummy on the heap and insert in map
+        3. create libuv data struct with the pointer to cache
+        4. queue libuv to cache
+    if exists:
+        if status < 0 (ONLY IF IT WAS PROCESSED AND ENDED UP BEING INVALID. ALSO IT IS AUTOMATICALLY REMOVED REALLY FAST, SO CHANCES TO MEET SUCH STATUS ARE LOW):
+            unlock accessor
+            throw js error and that's all
+        if status >= 0
+            increase busyLevel by one and that's all
+
+
+.compile function. first string param - input filename, second boolean - save in global cache whole file, third string? - output, fourth (status)=>void - callback
+if output exists - check if empty. If is - throw js error.
+lock accessor in global map and try to get cache
+    if does not exist:
+        check syntax
+        create cache dummy on the heap
+        get file descriptor, file size.
+        create task on the heap and insert data above in it.
+        create libuv data and insert task in it
+        queue libuv to cache for optimization
+    if exists:  
+        if status < 0: do same as in .cache
+        if status 0 (.compile is not meant for this case. Don't create a background for it): 
+            1. busyLevel++
+            2. create a task struct forOptimization on the heap with cache pointer, save boolean, output as std::string (even empty), and "invalid_file_size" (look below)
+            NOTICE!!! I don't get file's size, but initialize it with "invalid_file_size". When time comes to processing, it will mean that cache container has full size and It was initialized in libuv.
+            3. find or create a vector in concurrent unordered map for that cache.
+            4. push this task to vector and exit.
+        if 0 < status (that's still ok if status 1, but IT IS NOT MEANT TO BE USED LIKE THAT):
+            if status 3 && output is not string - call callback and quit (still have to write to output)
+            1. busyLevel++
+            2. same as step 2 above, but init with normal size
+            3. queue processing task 
+
+// this part below still needs to be edited. That's my old thought
+  - if I call either addon.streamToJS or addon.streamToFS
+      1) try to get cache from global.
+        if could not - get file descriptor, get file size. 
+      1) get file descriptor
+      2) get file size
+      create task container, emplace state of current template inside with acquired data. 
