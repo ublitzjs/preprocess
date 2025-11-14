@@ -69,7 +69,7 @@ If some task finds cache in status 2 - it uses a std::atomic from cache itself t
 
 
 
-### Processing flow of certain functions in js
+### Certain functions in js
 .cache function
 lock accessor in global map and try to get cache
     if does not exist:
@@ -92,6 +92,8 @@ lock accessor in global map and try to get cache
         check syntax
         create cache dummy on the heap
         get file descriptor, file size.
+        if save || fileSize <= maxChunkSize - save in global map
+        release accessor
         create task on the heap and insert data above in it.
         create libuv data and insert task in it
         queue libuv to cache for optimization
@@ -99,20 +101,39 @@ lock accessor in global map and try to get cache
         if status < 0: do same as in .cache
         if status 0 (.compile is not meant for this case. Don't create a background for it): 
             1. busyLevel++
+            release accessor
             2. create a task struct forOptimization on the heap with cache pointer, save boolean, output as std::string (even empty), and "invalid_file_size" (look below)
             NOTICE!!! I don't get file's size, but initialize it with "invalid_file_size". When time comes to processing, it will mean that cache container has full size and It was initialized in libuv.
             3. find or create a vector in concurrent unordered map for that cache.
             4. push this task to vector and exit.
         if 0 < status (that's still ok if status 1, but IT IS NOT MEANT TO BE USED LIKE THAT):
-            if status 3 && output is not string - call callback and quit (still have to write to output)
+            if status 3 && output is not string - release accessor, call callback and quit (still have to write to output)
             1. busyLevel++
+            release accessor
             2. same as step 2 above, but init with normal size
             3. queue processing task 
 
-// this part below still needs to be edited. That's my old thought
-  - if I call either addon.streamToJS or addon.streamToFS
-      1) try to get cache from global.
-        if could not - get file descriptor, get file size. 
-      1) get file descriptor
-      2) get file size
-      create task container, emplace state of current template inside with acquired data. 
+
+
+.streamToFS (and almost same in streamToJS). first param - object, second - templates filenames and their state, third - output, fourth - callback
+in first param get number "id".
+Use id in second param to get template info (tuple)
+use first index in tuple to get filename of template
+lock global caches map and try to get cache
+    if exists:
+        if status < 0 : do same as in .cache
+        if status 0:
+            1. busyLevel++
+            2. release accessor
+            3. create a task struct forFS with all data from params and invalid_file_data to the state of processing
+            4. repeat steps 3,4 from .compile and status 0
+        if status > 0;
+            busyLevel++
+            release accessor
+            same as step 3 above but init with normal size. (probably write that in constructor of forFS)
+            queue processing task
+
+
+### Processing functions
+one for .compile:
+
