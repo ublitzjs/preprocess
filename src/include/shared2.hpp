@@ -137,6 +137,7 @@ namespace caching {
       // whenever streaming worker gets some task, cache already is set to at least 1 and shouldn't be touched when workers picks it.
       uint16_t busyLevel = 1;
       Status status = Status::PendingDiskRead;
+      
       bool canHaveAST = false; // if true - it is either "precompiled" and read (entirely or streamed) from file with syntax described in it already OR the file is cached entirely and will have all syntax saved as soon as it appears to get processed
       // it creates a dummy. caching::dataMap needs to have a sign that file is BEING cached right now.
       perhaps_streamed(): pointer(nullptr), filename(nullptr), size(0) {};
@@ -175,7 +176,6 @@ namespace caching {
     // when template is cached completely in map - it can be optimized in runtime or was read with optimization already in it. If it is streamed - it cannot be optimized in runtime but can be read from file with optimization in it.
     struct perhaps_optimized : public perhaps_streamed {
       std::vector<AST_Item> AST;
-      std::atomic<uint16_t> AST_CurrentAmount = 0;
       perhaps_optimized(const std::string& templateName) : perhaps_streamed(templateName) {}
     };
   }

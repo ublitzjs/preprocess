@@ -53,8 +53,8 @@ export var addon: {
   * */
   clearCache(name: string): boolean;
   /**
-   * It doesn't notify you when it finishes. It brings a lot of unwanted overhead + you should always test your template with "compile" before. This way problem can only happen due to memory overflowing, which can't be prevented.
+   * It doesn't notify you when it finishes. second param means whether template already has ast inside file or not.
    * @throws error if something failed.
   * */
-  cache(name: string): void; 
+  cache(name: string, ast: boolean): void; 
 } = require("../build/Release/addon.node")
