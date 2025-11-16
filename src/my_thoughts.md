@@ -21,13 +21,15 @@ The size should be stored in cache container as std::atomic<uint8_t> AND IT will
 However to avoid alignment of 8 bytes and stay without any paddings, one byte seems to be needed.
 But now let's look at these values of cache container:
     Status status - enum value which actually never needs more than 4 bits
-    bool cacheCanHaveAST - 1 bit. // helps with understanding polymorphic caches
-    bool sourceHasAST - 1 bit. // this one is needed only when caching first time in libuv. By this I decide if I should read file normally or "2 bytes -> uint32_t numbers -> contents"
     uint16_t busyLevel - amount of tasks / "js asked", which gets deleted if 0 - 12 bits as an overrated maximum
+    bool cacheCanHaveAST - 1 bit. // helps with understanding polymorphic caches
+    bool sourceFileHasAST - 1 bit. // this one is needed only when caching first time in libuv. By this I decide if I should read file normally or "2 bytes -> uint32_t numbers -> contents"
+    bool cacheIsGlobal - 1 bit. // Just a sign, created the moment cache is allocated
 It may seem at first, that all these can be somehow combined because have clear limits, BUT here comes "thread safety". 
-I cannot unite "status" and sourceHasAST", because "sourceHasAST" can be read whenever wanted and is READONLY, while for status "caching::dataMap" should always be locked.
- Using logic above, I CAN unite "busyLevel" and "status", because both require map to be locked, and unite "cacheCanHaveAST" with "sourceHasAST", because both a readonly booleans
+I cannot unite "status" and sourceFileHasAST", because "sourceHasAST" can be read whenever wanted and is READONLY, while for status "caching::dataMap" should always be locked.
+ Using logic above, I CAN unite "busyLevel" and "status", because both require map to be locked, and unite "cacheCanHaveAST" with "sourceFileHasAST", because both a readonly booleans
 
++ .compile processing function would first read/stream the template and find ast and then -> queue libuv to write that all to output. But instead of recreating new input descriptor I would just "move" descriptor to the beginning. On Linux it is "lseek" function.
 
 ### Multithreaded AST creation.
 Processing functions are usually different, but one thing definitely unites them - parallelized cache handling. Now so that AST exists it is important to understand, that several threads may process same cache in parallel, the result of this processing should not go to waste, unnecessary work should not be done and my C++ app should have mercy on the server, which might choose my app. 
@@ -51,7 +53,28 @@ If some task finds cache in status 2 - it uses a std::atomic from cache itself t
     4. again increases std::atomic and uses notify_all
     5. processes all ast as if it was there whole this time.
 
+### Recursion levels and states of processing
+state - structure, containing most metadata about cache.
+However it should not by itself contain a cache pointer.
+For example, if .compile is called task needs to process one single cache -> it can be stored in task directly
 
+In streamToFS or streamToJS story is a bit different.
+There is a custom array of all used and "to be used" cache pointer as well as their counter of awaiting usages.
+It actually is just one pointer of data, which looks like this: [2byte num][8byte pointer]...
+All this custom array does is provides helper methods to operate this data as if it was is structures. (alignment is pricy and #pragma packs break ARM architecture)
+Its size is stored in "second param" to streamToXX - templatesList array from js. 
+When constructing that buffer on the heap its values are zeros and null pointers. Its size == (2+8) * templatesList.Length()
+uint2 - amount for cache to definitely live before its removal/deletion. If zero from the beginning and pointer to the right is valid - cache has unlimited usage and should be removed in the end of the function. If was not zero and after some usage WAS SUPPOSED TO BECAME zero (but I leave it as a 1) - gets removed and pointer = nullptr. If that jpreviously removed cache happened to be used again (I would find "1" at the old usages), then I set usages to 0 instead of the amount passed from js.
+Each position in that buffer corresponds to position in templatesList. So each time new template recursively needs to be processed - its index is used to lookup from templatesList (number of usages and filename) and put to the same index in custom array.
+
+
+Also there is a stack of "inclusion levels" for streamToXX.
+Whenever new template(s) need(s) to be included - new level is created and pushed to stack.
+Level represents one reuseable state and js object/array. 
+Levels are "singular" and "plural". Singular holds single js object and plural holds js array of objects + index of array to be accessed at the time.
+Each object holds "id" and "keys" - interpolation data.
+When the level is entered, I create cache pointer& on the stack and call "getCurrentParams": singular level returns me its only object and plural - object at its index
+Then to get cache pointer I use that custom array from before and lookup (it must be initialized at function start) cache pointer from it at given id.
 
 ### Certain functions in js
 .cache function
@@ -142,7 +165,50 @@ lock global caches map and try to get cache
             same as step 3 above but init with normal size. (probably write that in constructor of forFS)
             queue processing task
 
+### error handling through polymorphism
+This is tree of tasks:
+            MinBase 
+          /         \
+forOptimization       Base
+                    /      \
+                 forJS    forFS
 
+MinBase has "emitError" virtual, which for... classes override.
+forOptimization::emitError does this:
+    close input descriptor
+    call tsfn with first param as status
+    release tsfn
+    // don't delete cache, because it will be done outside this function
+    // output descriptor doesn't exist until the end, so no. it is not here
+forFS :
+    1. close output descriptor, remove output completely
+    2. remove top stack level (because its cache failed.)
+    3. run through each stack level from the "new" top (touch only CURRENT template). For each:
+        close input descriptor
+        get index of current cache from js object in level
+        get current cache&
+        bool shouldBeDeleted = true;
+        if cache is in map:
+            lock map
+            shouldBeDeleted = !--busyLevel
+            if shouldBeDeleted:
+                erase accessor
+        if shouldBeDeleted : delete cache from heap
+        cache = nullptr (it is reference to pointer in custom array)
+        remove current level from stack
+    4. run through custom array for each pointer:
+        if !pointer: continue;
+        bool shouldBeDeleted = true;
+        if cache is in map:
+            lock map
+            shouldBeDeleted = !--busyLevel
+            if shouldBeDeleted:
+                erase accessor
+    5. release "params" and "templatesList" js values references
+    6. call tsfn with first param like [status, templateName], release tsfn (finalizer should delete the task)
+        
+
+forJS // left to write
 ### Libuv workers
 
 for .cache
@@ -198,10 +264,10 @@ if cache is not required by user to be cached whole - hence it may be not the fi
     1. leftSize = fileSize - processedSize
     2. maxSizeToRead = std::min(leftSize, maxChunkSize)
     3. sizeToRead = maxSizeToRead - syntaxPartialsSize
-    4. bool firstEntry = cache->pointer (if already exists - not first libuv entry)
-    5. if cache container has nullptr: malloc(sizeToRead) and set pointer to container
-    6. read file to the "pointer + syntaxPartialsSize" as an offset
-    7. processedSize+=sizeToRead
+    4. processedSize+=sizeToRead
+    5. bool firstEntry = cache->pointer (if already exists - not first libuv entry)
+    6. if cache container has nullptr: malloc(sizeToRead) and set pointer to container WITHOUT MUTEXES
+    7. read file to the "pointer + syntaxPartialsSize" as an offset
     8. if processedSize == fileSize : 
         close input descriptor AND replace it in state to invalid
         if firstEntry (so it is first and last libuv entry -> cache dummy is in map)
@@ -210,3 +276,18 @@ if cache is not required by user to be cached whole - hence it may be not the fi
        else (cache definitely is not global -> needs no thread safety)
             status = 1
     9. queue current task
+if error:
+    1. close input descriptor
+    2. call tsfn with status, release tsfn.
+    2. if firstEntry && processedSize == fileSize (cache is in global map)
+        create accessor 
+        run through waiting tasks, for each call "emitError" function
+        erase accessor
+    3. delete cache from the heap
+
+
+for streamToFS
+get task pointer from libuvDataStruct
+get state from the highest interpolation level
+get cache container, input size, input descriptor, output descriptor (!!!), length of partials from state
+do steps "1 -> 4" above

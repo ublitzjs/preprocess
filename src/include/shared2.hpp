@@ -15,6 +15,18 @@
 #include <tbb/concurrent_unordered_map.h>
 #include <tbb/concurrent_hash_map.h>
 #include "./cross_os.hpp"
+namespace statuses {
+  enum class cache : int8_t { // < 0 - error, > 0 - good
+    AST_Ready = 2,
+    NoAST_Yet = 1,
+    PendingDiskRead = 0,
+    NoFile = -1,
+    CantGetSize = -2,
+    CantRead = -3,
+    CantAllocate = -4,
+    AST_Failed = -5
+  };
+}
 enum Action : uint8_t {
   JustRead = 0,
   Insert = 1,
@@ -117,16 +129,6 @@ namespace syntax {
 }
 namespace caching {
   // >= 0 ? GOOD : BAD
-  enum Status : int8_t {
-    AST_Ready = 2,
-    NoAST_Yet = 1,
-    PendingDiskRead = 0,
-    NoFile = -1,
-    CantGetSize = -2,
-    CantRead = -3,
-    CantAllocate = -4,
-    AST_Failed = -5
-  };
   namespace data {
     // only status (and AST-related stuff in full cache) should be accessed in thread-safe manner by blocking dataMap. Everything else - only caching thread touches.
     struct perhaps_streamed {
@@ -135,8 +137,7 @@ namespace caching {
       const uint32_t size;
       // whenever streaming worker gets some task, cache already is set to at least 1 and shouldn't be touched when workers picks it.
       uint16_t busyLevel = 1;
-
-      Status status = Status::PendingDiskRead;
+      statuses::cache status = statuses::cache::PendingDiskRead;
       bool canHaveAST = false;
       std::atomic<uint8_t> AST_Amount;
 
@@ -297,13 +298,8 @@ namespace streaming {
     public:
       const syntax::dataStruct* const syntaxStruct;
       const Napi::ThreadSafeFunction tsfn;
-      virtual void markConsumableChunk() = 0;
-      virtual void sendChunks() = 0;
       virtual void threadCB() = 0;
-      virtual bool shouldCacheWholeFile() = 0;
-      virtual void sendError(caching::Status, caching::data::perhaps_streamed*) = 0;
-      virtual inclusion::stateStruct& getCurrentState() = 0;
-      static void cachingLibuvCB(uv_work_t* req);
+      virtual void emitError(caching::Status, caching::data::perhaps_streamed*) = 0;
     static void Finalizer(Napi::Env, MinBase* task, void*){
         delete task;
     }
@@ -389,8 +385,6 @@ namespace streaming {
         this->cleanCaches();
       }
       void threadCB() override;
-      void markConsumableChunk() override;
-      void sendChunks() override;
     };
     class forFS : public Base {
       std::vector<char*> chunks;
@@ -412,7 +406,7 @@ namespace streaming {
     class forOptimization : public MinBase {
       public:
       streaming::inclusion::stateStruct state;
-      const bool saveCacheInMap;
+      // also cache pointer
       forOptimization(
           bool saveCacheInMap,
           Napi::Env env,
