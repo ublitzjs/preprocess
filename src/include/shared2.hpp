@@ -130,17 +130,19 @@ namespace caching {
   namespace data {
     // only status (and AST-related stuff in full cache) should be accessed in thread-safe manner by blocking dataMap. Everything else - only caching thread touches.
     struct perhaps_streamed {
-      // if not cached yet - nullptr
       char* const pointer;
       const char* const filename;
       const uint32_t size;
       // whenever streaming worker gets some task, cache already is set to at least 1 and shouldn't be touched when workers picks it.
       uint16_t busyLevel = 1;
+
       Status status = Status::PendingDiskRead;
-      
-      bool canHaveAST = false; // if true - it is either "precompiled" and read (entirely or streamed) from file with syntax described in it already OR the file is cached entirely and will have all syntax saved as soon as it appears to get processed
-      // it creates a dummy. caching::dataMap needs to have a sign that file is BEING cached right now.
+      bool canHaveAST = false;
+      std::atomic<uint8_t> AST_Amount;
+
+      // it creates a dummy
       perhaps_streamed(): pointer(nullptr), filename(nullptr), size(0) {};
+
       perhaps_streamed(const std::string& filenameReference): 
         pointer(nullptr),
         filename(
@@ -160,18 +162,12 @@ namespace caching {
         *const_cast<uint32_t*>(&size) = mainChunkSizeParam;
         return chunkPointer;
       }
+      
       ~perhaps_streamed(){
         delete filename;
         delete pointer;
-    }
+      }
     };
-    #pragma pack(push, 1) // less memory, better to write to file.
-    struct AST_Item {
-      uint32_t length;
-      // no REMOVE state because such templates don't need to be analyzed.
-      bool isItForInterpolation;    
-    };
-    #pragma pack(pop)
 
     // when template is cached completely in map - it can be optimized in runtime or was read with optimization already in it. If it is streamed - it cannot be optimized in runtime but can be read from file with optimization in it.
     struct perhaps_optimized : public perhaps_streamed {
