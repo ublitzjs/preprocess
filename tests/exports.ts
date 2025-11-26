@@ -28,7 +28,7 @@ export enum Status {
 * */
 export type templatesList = (string | [string, number, boolean?])[]; 
 export var addon: {
-  streamToFS(params: FSStreamParams, templates: templatesList, output:string, callback: ()=>void): void;
+  streamToFS(params: FSStreamParams, templates: templatesList, output:string, callback: (error?: [Status, string]) /*string - cache's filename*/ =>void): void;
   // if you NEVER call "cache" - set second param to 0.
   createThreadPools(streamingWorkersAmount: number): void;
   Stop(): void;
