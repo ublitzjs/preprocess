@@ -1,4 +1,5 @@
 #pragma once
+#include <napi.h>
 #include <cstring>
 #include <regex>
 #include <string>
@@ -75,8 +76,6 @@ namespace caching {
   struct data;
   extern std::unordered_map<std::string, data*> dataMap;
   extern tbb::spin_mutex statusMutex;
-  void libuvCacheGlobally(uv_work_t*);
-  void libuvCacheGloballyAfter(uv_work_t*, int);
 }
 namespace streaming {
   namespace data {
@@ -95,13 +94,17 @@ struct caching::data {
       char* pointer;
       // if cache status = 0 and is cached globally
       std::vector<streaming::data::MinBase*>* waitingTasks;
-      // if cache status = 1 and is streamed
+      // if cache  is streamed
       streaming::data::MinBase* singleWaitingTask;
     };
-    uint32_t size;
+    union {
+      uint32_t size;
+      // It is needed only when libuv caches for the first time.
+      bool sourceFileHasAST;
+    };
     uint8_t AST_amount;
+    tbb::spin_mutex mutex;
   protected:
-    int8_t m_packedBooleans;
     int16_t m_packedStatusAndBusyLevel = 0;
   public:
     inline Status getStatus() const {
@@ -130,12 +133,6 @@ struct caching::data {
       m_packedStatusAndBusyLevel |= (value << 3);
       return value;
     }
-    inline bool isStreamed(){
-      return m_packedBooleans & 0b1;
-    }
-    inline bool sourceFileHasAST(){
-      return m_packedBooleans & 0b10;
-    }
     data(std::string& filenameReference, bool shouldBeStreamed, bool hasASTInSourceFile)
       : filename(
           static_cast<char*>(std::memcpy(
@@ -147,7 +144,12 @@ struct caching::data {
         )
     {
       book();
-      m_packedBooleans &= shouldBeStreamed | (hasASTInSourceFile<<1);
     }
 };
 extern uint32_t maxChunkSize;
+namespace libuv {
+  extern Napi::ThreadSafeFunction jsBridge;
+  void silentCacheCB(uv_work_t*);
+  void silentCacheAfterCB(uv_work_t*, int);
+  void clearBrokenCacheCB(uv_async_t*);
+}

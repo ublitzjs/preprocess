@@ -38,12 +38,13 @@ namespace exports {
     cache->waitingTasks = new std::vector<streaming::data::MinBase*>();
     uv_work_t* request = new uv_work_t();
     request->data = cache;
+
     uv_queue_work(
         uv_default_loop(),
         request,
-        caching::libuvCacheGlobally,
-        caching::libuvCacheGloballyAfter
-    );
+        libuv::silentCacheCB,
+        libuv::silentCacheAfterCB
+        );
     return info.Env().Undefined();
   }
   void compile(const Napi::CallbackInfo &info){}
