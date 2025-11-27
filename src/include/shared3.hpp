@@ -5,8 +5,9 @@
 #include <stdint.h> 
 #include <unordered_map>
 #include <tbb/spin_mutex.h>
+#include <uv.h>
 // overall ~ 7 values, so 3 bits are enough to fit it inside
-enum class Status : int8_t { // < 0 - error, > 0 - good
+enum Status : int8_t { // < 0 - error, > 0 - good
   AST_Ready = 2,
   PendingAST = 1,
   PendingDiskRead = 0,
@@ -15,7 +16,7 @@ enum class Status : int8_t { // < 0 - error, > 0 - good
   CantAllocate = -3,
   AST_Failed = -4
 };
-enum class Action : uint8_t {
+enum Action : uint8_t {
   JustRead = 0,
   Insert = 1,
   Remove = 2
@@ -71,9 +72,11 @@ struct syntax {
   }
 };
 namespace caching {
-  struct data ;
-  extern std::unordered_map<std::string, data> dataMap;
+  struct data;
+  extern std::unordered_map<std::string, data*> dataMap;
   extern tbb::spin_mutex statusMutex;
+  void libuvCacheGlobally(uv_work_t*);
+  void libuvCacheGloballyAfter(uv_work_t*, int);
 }
 namespace streaming {
   namespace data {
@@ -91,7 +94,7 @@ struct caching::data {
       // data, not accessed from libuv - thread-safe
       char* pointer;
       // if cache status = 0 and is cached globally
-      std::vector<streaming::data::MinBase>* waitingTasks;
+      std::vector<streaming::data::MinBase*>* waitingTasks;
       // if cache status = 1 and is streamed
       streaming::data::MinBase* singleWaitingTask;
     };
@@ -99,7 +102,7 @@ struct caching::data {
     uint8_t AST_amount;
   protected:
     int8_t m_packedBooleans;
-    int16_t m_packedStatusAndBusyLevel;
+    int16_t m_packedStatusAndBusyLevel = 0;
   public:
     inline Status getStatus() const {
       int8_t value = m_packedStatusAndBusyLevel & 0b111;
@@ -114,11 +117,19 @@ struct caching::data {
     inline uint16_t getBusyLevel() const {
       return m_packedStatusAndBusyLevel >> 3;
     };
-    inline void setBusyLevel(uint16_t value){
-      value &= 0x1FFF;
+    inline void book(){
+      uint16_t value = (m_packedStatusAndBusyLevel >> 3);
+      value++;
       m_packedStatusAndBusyLevel &= ~(0x1FFF << 3);
       m_packedStatusAndBusyLevel |= (value << 3);
-    };
+    }
+    inline bool unbookAndCheckIfFree() {
+      uint16_t value = (m_packedStatusAndBusyLevel >> 3);
+      if(value) value--; 
+      m_packedStatusAndBusyLevel &= ~(0x1FFF << 3);
+      m_packedStatusAndBusyLevel |= (value << 3);
+      return value;
+    }
     inline bool isStreamed(){
       return m_packedBooleans & 0b1;
     }
@@ -135,9 +146,7 @@ struct caching::data {
           )
         )
     {
-      setStatus(Status::PendingDiskRead);
-      setBusyLevel(1);
-      m_packedBooleans = 0;
+      book();
       m_packedBooleans &= shouldBeStreamed | (hasASTInSourceFile<<1);
     }
 };
