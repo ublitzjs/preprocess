@@ -32,21 +32,6 @@ I cannot unite "status" and sourceFileHasAST", because "sourceHasAST" can be rea
 
 + .compile processing function would first read/stream the template and find ast and then -> queue libuv to write that all to output. But instead of recreating new input descriptor I would just "move" descriptor to the beginning. On Linux it is "lseek" function.
 
-### Transition to caching in libuv from other work
-As I pointed at the very top - I create a cache dummy in global map (if cache is not supposed to be streamed). But before template is actually cached its "pointer" is nullptr. So I can reuse it for different purpose. In caching::dataStruct I create "union {char* pointer; streaming::data::MinBase* ownerTask; std::vector<streaming::data::MinBase>* waitingTasks}".
-Whenever any task gets to some template and needs it to be cached, it:
-    opens descriptor and gets file size. If can be cached whole - saves globally. 
-    if cache should be streamed -  creates std::vector on the heap, sets it to cache container, pushes itself to it, sets status 0, unlocks map.
-
-ALSO before each caching procedure would requiring queuing work to libuv. This could lead to libuv overflow or just inefficient usage of libuv.
-Now I will create "namespace caching::libuv {struct TaggedPointer{void* ptr; bool isState() which also fixes first bit;}; struct dataStruct {uv_work_t* req; std::queue<TaggedPointer*> templates;}; tbb::mutex mutex; dataStruct* worker;".
-+ void* templates - tagged pointers. They point to 2+ aligned structures: "caching::dataStruct | streaming::inclusion::stateStruct". First bit is always zero due to the alignment, so I can use it as a boolean. This way I can cache global templates and STREAMED TEMPLATES WITH STATES in one go.
-So whenever task wants to cache a template, it ceates a dummy and a TaggedPointer. If task caches it - set first bit to true. If not - don't touch.
-Then lock caching::libuv::mutex, look if worker exists. If not - create data, push tagged pointer to queue, set &data to "dataStruct* worker", unlock mutex, queue libuv.
-But this functionality works ONLY FOR CACHING purposes. If I create another libuv worker to write "forFS" data to output - I don't do this.
-All this eliminates need to create another "libuv handler function" for .compile, since by using option above one handler can cache streamed and non-streamed templates.
-Tagged pointer can lead either to cache container or to streaming::data::MinBase. But libuv only cares about cache containers, states and "task->workerCB()" to queue processing. So MinBase needs to have one more virtual function - "getLastState". This way any task can return essential data.
-
 ### Multithreaded AST creation.
 Processing functions are usually different, but one thing definitely unites them - parallelized cache handling. Now so that AST exists it is important to understand, that several threads may process same cache in parallel, the result of this processing should not go to waste, unnecessary work should not be done and my C++ app should have mercy on the server, which might choose my app. 
 1) Global cache needs to have such statuses: 0 - waiting to be cached by libuv, < 0 - errored, 1 - Cached without ast, 2 - some thread performs ast optimization, 3 - cached and optimized
