@@ -1,5 +1,7 @@
 #include "./include/shared3.hpp"
 #include <napi.h>
+
+
 namespace exports {
   void streamToFS(const Napi::CallbackInfo &info){}
   void streamToJS(const Napi::CallbackInfo &info){}
@@ -23,11 +25,11 @@ namespace exports {
     std::string str = std::move(info[0].As<Napi::String>().Utf8Value());
     auto it = caching::dataMap.find(str);
     if(it != caching::dataMap.end()) {
-      caching::statusMutex.lock();
+      it->second->mutex.lock();
       Status status = it->second->getStatus();
       if(status < 0) {
         bool isFree = it->second->getBusyLevel(); // if error in libuv
-        caching::statusMutex.unlock();
+        it->second->mutex.unlock();
         if(isFree) {delete it->second; caching::dataMap.erase(str);}
         return Napi::Number::New(info.Env(), status); 
       } else it->second->book();
@@ -38,13 +40,8 @@ namespace exports {
     cache->waitingTasks = new std::vector<streaming::data::MinBase*>();
     uv_work_t* request = new uv_work_t();
     request->data = cache;
-
-    uv_queue_work(
-        uv_default_loop(),
-        request,
-        libuv::silentCacheCB,
-        libuv::silentCacheAfterCB
-        );
+    uvWorkers::forSilentCache* worker = new uvWorkers::forSilentCache(info.Env());
+    worker->Queue();
     return info.Env().Undefined();
   }
   void compile(const Napi::CallbackInfo &info){}
@@ -52,9 +49,9 @@ namespace exports {
     std::string str = std::move(info[0].As<Napi::String>().Utf8Value());
     auto it = caching::dataMap.find(str);
     if(it == caching::dataMap.end()) return;
-    caching::statusMutex.lock();
-    if(!it->second->unbookAndCheckIfFree() || it->second->getStatus() == Status::PendingDiskRead)  return caching::statusMutex.unlock();
-    caching::statusMutex.unlock();
+    it->second->mutex.lock();
+    if(!it->second->unbookAndCheckIfFree() || it->second->getStatus() == Status::PendingDiskRead)  return it->second->mutex.unlock();
+    it->second->mutex.unlock();
     delete it->second;
     caching::dataMap.erase(str);
   }

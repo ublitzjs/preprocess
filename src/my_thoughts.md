@@ -6,7 +6,8 @@ In js thread I add or remove cache containers, while libuv gets only its pointer
 
 For each cache container I will save "union" of uint32 size and single boolean "sourceFileHasAST". Size is null and useless until file is cached, but sourceFileHasAST is useless after file is cached - just use same memory when another doesn't need it. In libuv to determine if file is cached globally or not it is enough to fulfill these requirements: don't be in silentCacheCB (there it is global automatically), save boolean if cache was empty when arrived to libuv (if not - streamed and non-global), if its size (given in state) it smaller than maxChunkSize.
 
-I will use TSFN bridge to js to avoid touching global caches map from libuv. For that I would need to lock mutex each time I lookup map -> OVERHEAD. Mutex in fact is needed only to look at status of cache and busyLevel. Sotring one would not be bad, but storing one for each is even better - less chance for mutex to get accessed from several threads - almost no contention.
+Libuv handles work in this way: queue -> execute in worker thread -> "after callback" on the main thread. When I postpone processing in favour of reading file in libuv, I need to queue request for its handling too. Here comes "after callback". However if used only with uv_work_t no Napi::Env is provided, so Napi::AsyncWorker comes in handy.
+
 
 As I mentioned in the main headline - I want to avoid serialization. "streamToFS" involves disk writes, so at the first glance it should use libuv. However it REQUIRES COPYING DATA. I can write to disk on the main thread. To prove the point further - who would use it extensively every second? As for me it is a rare to use function, which can sacrifice speed in favour of memory usage + useless overhead (it would slow down main thread in each case).
 
@@ -37,27 +38,7 @@ I cannot unite "status" and sourceFileHasAST", because "sourceHasAST" can be rea
 
 + .compile processing function would first read/stream the template and find ast and then -> queue libuv to write that all to output. But instead of recreating new input descriptor I would just "move" descriptor to the beginning. On Linux it is "lseek" function.
 
-### Multithreaded AST creation.
-Processing functions are usually different, but one thing definitely unites them - parallelized cache handling. Now so that AST exists it is important to understand, that several threads may process same cache in parallel, the result of this processing should not go to waste, unnecessary work should not be done and my C++ app should have mercy on the server, which might choose my app. 
-1) Global cache needs to have such statuses: 0 - waiting to be cached by libuv, < 0 - errored, 1 - Cached without ast, 2 - some thread performs ast optimization, 3 - cached and optimized
-2) When some task finds cache in state 1 - it creates state 2 and strives to get ast as soon as possible. Only after that it again loops through ast as if nothing happened.
-3) (It doesn't apply to templates, which are streamed BECAUSE they are not global and don't suffer from multithreading) 
-If some task finds cache in status 2 - it uses a std::atomic from cache itself to make thread sleep and wait.
-  Threads will be woken up each time the processing task encounters an interpolation. Why? Other threads will run through recently made changes (which will be saved before using cv to trigger others), and try to find themselves... A JOB (jumpscare). I mean that if at some point task will be required to make a recursive insertion of another template, it would be better for it to start as soon as possible, instead of sleeping. 
-  You might have asked: "if sleeping is so bad, why wouldn't you just leave that cache as soon as you found it and go to next task?". I DON'T KNOW, if next task holds different cache. If does - I am lucky. 
-  Now you might have thought: "Who would start processing same template 2+ times in a row?". You're probably right, but the fact is that tasks, waiting in a queue, can have different state of completion and different template to be used at that particular moment. So thread shouldn't avoid such templates because it has no guarantees about finding another JOB (jumpscare).
-  4) processing task on the stack memory creates std::array<AST_Item, 2> (or something like this).
-  As I said before - tasks optimize only completely cached templates for interpolation and non-interpolation.
-  In this case non-interpolation can't repeat > 1 time in a row, interpolation can repeat 2+ times in a row.
-  After finding "interpolation" each time task locks accessor of cache in global map, pushes new ast to cache, unlocks accessor, notifies others via std::atomic::notify_all. But before it actually increases this std::atomic<uin16_t> to match the already processed amount.
-  When task is notified it immediately creates a const_accessor on given cache, reads ast, releases accessor and again start waiting for change in std::atomic. As the old value for atomic it will use current ast_index of state in task.
-
-  5) When processing task finishes optimization, it:
-    1. locks global map (which is done usually only when status of cache changes)
-    2. sets status to 3
-    3. unlocks accessor
-    4. again increases std::atomic and uses notify_all
-    5. processes all ast as if it was there whole this time.
++ in streaming I have recursion levels (look below). They need to have uint16_t index or inclusion instrution. Meanwhile fileSize and processedFileSize won't ever reach 16 Exabytes. So I "packed" all in one uint8_t packed[16]. File size data is accessed infrequently and instruction index is placed with taking alignment into consideration.
 
 ### Recursion levels and states of processing
 state - structure, containing most metadata about cache.

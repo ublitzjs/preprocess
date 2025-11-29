@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <tbb/spin_mutex.h>
 #include <uv.h>
+#include "./cross_os.hpp"
 // overall ~ 7 values, so 3 bits are enough to fit it inside
 enum Status : int8_t { // < 0 - error, > 0 - good
   AST_Ready = 2,
@@ -75,9 +76,56 @@ struct syntax {
 namespace caching {
   struct data;
   extern std::unordered_map<std::string, data*> dataMap;
-  extern tbb::spin_mutex statusMutex;
 }
 namespace streaming {
+  struct state {
+    Napi::Reference<Napi::Value> levelInstructions;
+    union {
+      caching::data* cache;
+      caching::data** cacheInTemplatesList;
+    };
+    char* writeablePtr;
+    char* currentPtr;
+  private:
+    // 7byte fileSize, 7byte processedFileSize, 2byte levelInstructionIndex. Also it is positioned so that levelInstructionIndex was 2byte aligned
+    uint8_t packedInts[16];
+  public:
+    cross_os::descriptor_t descriptor;
+    Action action = Action::JustRead;
+    uint8_t ast_index;
+    uint8_t syntaxPartialsSize = 0;
+    uint16_t getLevelInstructionIndex(){
+      return packedInts[14];
+    }
+    void setLevelInstructionIndex(uint16_t index){
+      packedInts[14] = index;
+    }
+    uint64_t getFileSize(){
+      uint8_t unwantedByte = packedInts[7];
+      packedInts[7] = 0;
+      uint64_t fileSize = *reinterpret_cast<uint64_t*>(packedInts);
+      packedInts[7] = unwantedByte;
+      return fileSize;
+    }
+    void setFileSize(uint64_t fileSize){
+      uint8_t unwantedByte = packedInts[7];
+      *reinterpret_cast<uint64_t*>(packedInts) = fileSize;
+      packedInts[7] = unwantedByte;
+    }
+    uint64_t getProcessedFileSize(){
+      uint8_t unwantedByte = packedInts[14];
+      packedInts[14] = 0;
+      uint64_t fileSize = *reinterpret_cast<uint64_t*>(packedInts);
+      packedInts[14] = unwantedByte;
+      return fileSize;
+    }
+    void incrementProcessedFileSize(uint32_t size){
+      uint8_t unwantedByte = packedInts[14];
+      packedInts[14] = 0;
+      *reinterpret_cast<uint64_t*>(packedInts+7) += size;
+      packedInts[14] = unwantedByte;
+    }
+  };
   namespace data {
     class MinBase {};
     class forAST : public MinBase {};
@@ -131,7 +179,7 @@ struct caching::data {
       if(value) value--; 
       m_packedStatusAndBusyLevel &= ~(0x1FFF << 3);
       m_packedStatusAndBusyLevel |= (value << 3);
-      return value;
+      return !value;
     }
     data(std::string& filenameReference, bool shouldBeStreamed, bool hasASTInSourceFile)
       : filename(
@@ -147,9 +195,23 @@ struct caching::data {
     }
 };
 extern uint32_t maxChunkSize;
-namespace libuv {
-  extern Napi::ThreadSafeFunction jsBridge;
-  void silentCacheCB(uv_work_t*);
-  void silentCacheAfterCB(uv_work_t*, int);
-  void clearBrokenCacheCB(uv_async_t*);
+ 
+namespace uvWorkers {
+  class forSilentCache : public Napi::AsyncWorker {
+  public:
+    explicit forSilentCache(Napi::Env env) : Napi::AsyncWorker(env) {};
+    void Execute() override;
+    void OnOK() override;
+    caching::data* cache;
+  };
+  class forStreaming : public Napi::AsyncWorker {
+  public:
+    explicit forStreaming(Napi::Env env) : Napi::AsyncWorker(env) {};
+    void Execute() override;
+    void OnOK() override;
+    streaming::data::MinBase* task;
+  };
 }
+
+
+
