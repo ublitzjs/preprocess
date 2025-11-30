@@ -38,8 +38,6 @@ I cannot unite "status" and sourceFileHasAST", because "sourceHasAST" can be rea
 
 + .compile processing function would first read/stream the template and find ast and then -> queue libuv to write that all to output. But instead of recreating new input descriptor I would just "move" descriptor to the beginning. On Linux it is "lseek" function.
 
-+ in streaming I have recursion levels (look below). They need to have uint16_t index or inclusion instrution. Meanwhile fileSize and processedFileSize won't ever reach 16 Exabytes. So I "packed" all in one uint8_t packed[16]. File size data is accessed infrequently and instruction index is placed with taking alignment into consideration.
-
 ### Recursion levels and states of processing
 state - structure, containing most metadata about cache.
 However it should not by itself contain a cache pointer.

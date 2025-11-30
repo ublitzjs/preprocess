@@ -79,52 +79,23 @@ namespace caching {
 }
 namespace streaming {
   struct state {
-    Napi::Reference<Napi::Value> levelInstructions;
-    union {
-      caching::data* cache;
-      caching::data** cacheInTemplatesList;
-    };
     char* writeablePtr;
     char* currentPtr;
-  private:
-    // 7byte fileSize, 7byte processedFileSize, 2byte levelInstructionIndex. Also it is positioned so that levelInstructionIndex was 2byte aligned
-    uint8_t packedInts[16];
-  public:
+    uint64_t fileSize;
+    uint64_t processedFileSize;
     cross_os::descriptor_t descriptor;
     Action action = Action::JustRead;
     uint8_t ast_index;
-    uint8_t syntaxPartialsSize = 0;
-    uint16_t getLevelInstructionIndex(){
-      return packedInts[14];
+    // is used only when this is level_state
+    uint16_t levelInstructionIndex;
+    inline uint8_t getSyntaxPartialsSize(){
+      // when I copy syntax partials to chunk beginning, I set currentPtr to that place, while writeablePtr should be put to the beginning.
+      return currentPtr - writeablePtr;
     }
-    void setLevelInstructionIndex(uint16_t index){
-      packedInts[14] = index;
-    }
-    uint64_t getFileSize(){
-      uint8_t unwantedByte = packedInts[7];
-      packedInts[7] = 0;
-      uint64_t fileSize = *reinterpret_cast<uint64_t*>(packedInts);
-      packedInts[7] = unwantedByte;
-      return fileSize;
-    }
-    void setFileSize(uint64_t fileSize){
-      uint8_t unwantedByte = packedInts[7];
-      *reinterpret_cast<uint64_t*>(packedInts) = fileSize;
-      packedInts[7] = unwantedByte;
-    }
-    uint64_t getProcessedFileSize(){
-      uint8_t unwantedByte = packedInts[14];
-      packedInts[14] = 0;
-      uint64_t fileSize = *reinterpret_cast<uint64_t*>(packedInts);
-      packedInts[14] = unwantedByte;
-      return fileSize;
-    }
-    void incrementProcessedFileSize(uint32_t size){
-      uint8_t unwantedByte = packedInts[14];
-      packedInts[14] = 0;
-      *reinterpret_cast<uint64_t*>(packedInts+7) += size;
-      packedInts[14] = unwantedByte;
-    }
+  };
+  // state for forFS or forJS
+  struct level_state : public state {
+    Napi::Reference<Napi::Value> levelInstructions;
   };
   namespace data {
     class MinBase {};
@@ -209,6 +180,8 @@ namespace uvWorkers {
     explicit forStreaming(Napi::Env env) : Napi::AsyncWorker(env) {};
     void Execute() override;
     void OnOK() override;
+    caching::data* cache;
+    streaming::state* state;
     streaming::data::MinBase* task;
   };
 }
