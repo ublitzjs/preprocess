@@ -35,7 +35,7 @@ namespace exports {
       } else it->second->book();
       return info.Env().Undefined();
     };
-    caching::data* cache = new caching::data(str, false, info[1].As<Napi::Boolean>().Value());
+    caching::fullData* cache = new caching::fullData(str, false, info[1].As<Napi::Boolean>().Value());
     // must be even empty - sacrifice memory to reduce caching::statusMutex lock time.
     cache->waitingTasks = new std::vector<streaming::data::MinBase*>();
     uv_work_t* request = new uv_work_t();

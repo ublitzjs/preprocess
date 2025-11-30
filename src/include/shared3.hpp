@@ -75,6 +75,7 @@ struct syntax {
 };
 namespace caching {
   struct data;
+  struct fullData;
   extern std::unordered_map<std::string, data*> dataMap;
 }
 namespace streaming {
@@ -98,7 +99,10 @@ namespace streaming {
     Napi::Reference<Napi::Value> levelInstructions;
   };
   namespace data {
-    class MinBase {};
+    class MinBase {
+    public:
+      virtual void emitError();
+    };
     class forAST : public MinBase {};
     class Base : public MinBase {};
     class forFS : public Base {};
@@ -121,7 +125,6 @@ struct caching::data {
       // It is needed only when libuv caches for the first time.
       bool sourceFileHasAST;
     };
-    uint8_t AST_amount;
     tbb::spin_mutex mutex;
   protected:
     int16_t m_packedStatusAndBusyLevel = 0;
@@ -165,15 +168,18 @@ struct caching::data {
       book();
     }
 };
+struct caching::fullData : caching::data {
+  fullData(std::string& filenameReference, bool shouldBeStreamed, bool hasASTInSourceFile) : data(filenameReference, shouldBeStreamed, hasASTInSourceFile) {}
+  std::vector<int> AST;
+};
 extern uint32_t maxChunkSize;
- 
 namespace uvWorkers {
   class forSilentCache : public Napi::AsyncWorker {
   public:
     explicit forSilentCache(Napi::Env env) : Napi::AsyncWorker(env) {};
     void Execute() override;
     void OnOK() override;
-    caching::data* cache;
+    caching::fullData* cache;
   };
   class forStreaming : public Napi::AsyncWorker {
   public:
@@ -185,6 +191,3 @@ namespace uvWorkers {
     streaming::data::MinBase* task;
   };
 }
-
-
-

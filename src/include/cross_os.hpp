@@ -23,14 +23,14 @@ namespace cross_os {
     return fileSize; 
   }
   constexpr int8_t ReadFailed = 0;
-  inline int32_t ReadFile(descriptor_t descriptor, void* destination, uint64_t size){
+  inline int64_t ReadFile(descriptor_t descriptor, void* destination, uint64_t size){
     return ::ReadFile(
       descriptor,
       destination,
       size,
 			nullptr,
 			NULL
-		) == TRUE;
+		);
   }
 }
 #elif PLATFORM_APPROACH == 1
@@ -58,8 +58,9 @@ namespace cross_os {
     };
     return inputStats.st_size;
   }
-  inline int32_t ReadFile(descriptor_t descriptor, void* destination, uint64_t size){
-    return read(descriptor, destination, size) != -1;
+  inline int64_t ReadFile(descriptor_t descriptor, void* destination, uint64_t size){
+    return read(descriptor, destination, size);
+
   }
 }
 #else 
