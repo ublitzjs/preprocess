@@ -8,11 +8,10 @@ For each cache container I will save "union" of uint32 size and single boolean "
 
 Libuv handles work in this way: queue -> execute in worker thread -> "after callback" on the main thread. When I postpone processing in favour of reading file in libuv, I need to queue request for its handling too. Here comes "after callback". However if used only with uv_work_t no Napi::Env is provided, so Napi::AsyncWorker comes in handy.
 
-
 As I mentioned in the main headline - I want to avoid serialization. "streamToFS" involves disk writes, so at the first glance it should use libuv. However it REQUIRES COPYING DATA. I can write to disk on the main thread. To prove the point further - who would use it extensively every second? As for me it is a rare to use function, which can sacrifice speed in favour of memory usage + useless overhead (it would slow down main thread in each case).
 
 ### AST optimization here means a list of structures telling "where is how much of text of what purpose".
-But saving "where" for each structure as a uint32_t offset would be too pricy, so instead it holds only uint32_t sizeAndPurpose - two numbers, uint31 and uint1
+But saving "where" for each structure as a uint32_t offset would be too pricy, so instead it holds only int32_t sizeAndPurpose. if > 0 - just read, < 0 - interpolation
 AST optimization IS NOT PERFORMED on templates with "dynamically removed" parts. ONLY FOR INTERPOLATION. When looking for both syntax parts handing was split into finding prefix and figuring out IF PREFIX WAS ACTUALLY PREFIXING SYNTAX, or it was just a coincidence. But here only prefix+interpolation is searched together, so if found - definitely means interpolation.
 As processing of template is done only on one thread, there is no need to rush and process whole template, so that waiting threads got no job at all. It can be done gradually: task processes template, finds position length, purpose, insert in vector. If it is interpolation - looks if needs another template. If template - leave cache to be and continue processing. Then if that template needed to be read with libuv - another task picks a job AND if finds that unfinished task - it looks at one boolean "completeAST", loops through data, and, if gets through interpolation - continues processing in the same way. It is a "LAZY PROCESSING" with no rush because of multithreading.
 
@@ -73,4 +72,17 @@ forOptimization       Base
                  forJS    forFS
 
 MinBase has "emitError" virtual, which for... classes override.
+If error happens in libuv, it doesn't touch waitingTasks, because they need to run on js thread to successfully terminate. 
+When Getting back to js thread I run through waiting tasks and emitError each of them. Then manually delete std::vector waitingTasks (if uvWorkers::forStreaming), replace cache->waitingTasks with null and delete cache container.
+No task by itself deletes its last template-cache, only everything before. If some template from before (I mean levels) was processed by another task and was found invalid, it didn't delete the cache and decremented busyLevel. So if found invalid cache -> try to clear it.
 
+### Caches acquiring and deletion
+when cache was found in map checking status and busyLevel is very important due to possibility of caching being in libuv. Afterwards on the main thread locking mutex is NOT NEEDED. If it is global in map - no libuv. 
+
+If cache is local and streamed (most likely), using mutex is not needed as well, because no ther task will get same cache container (including during its interaction with libuv). 
+
+If streaming task queues libuv:
+    if cache is global:
+        create std::vector on the heap, insert itself in it, save in cache->waitingTasks and in uvWorkers::forStreaming
+    else:
+        just save itself in uvWorkers::forStreaming without any vector

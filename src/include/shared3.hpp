@@ -11,7 +11,7 @@
 // overall ~ 7 values, so 3 bits are enough to fit it inside
 enum Status : int8_t { // < 0 - error, > 0 - good
   AST_Ready = 2,
-  PendingAST = 1,
+  JustInMemory = 1,
   PendingDiskRead = 0,
   CantGetSize = -1,
   CantRead = -2,
@@ -83,14 +83,14 @@ namespace streaming {
     char* writeablePtr;
     char* currentPtr;
     uint64_t fileSize;
-    uint64_t processedFileSize;
-    cross_os::descriptor_t descriptor;
+    uint64_t fileOffset;
+    cross_os::descriptor_t descriptor = cross_os::invalid_descriptor;
     Action action = Action::JustRead;
     uint8_t ast_index;
     // is used only when this is level_state
     uint16_t levelInstructionIndex;
     inline uint8_t getSyntaxPartialsSize(){
-      // when I copy syntax partials to chunk beginning, I set currentPtr to that place, while writeablePtr should be put to the beginning.
+      // when I copy syntax partials to chunk beginning, I set currentPtr to where partials end, while writeablePtr should be put to the beginning.
       return currentPtr - writeablePtr;
     }
   };
@@ -101,7 +101,8 @@ namespace streaming {
   namespace data {
     class MinBase {
     public:
-      virtual void emitError();
+      virtual void emitError(Napi::Env);
+      virtual void mainProcessing(Napi::Env);
     };
     class forAST : public MinBase {};
     class Base : public MinBase {};
@@ -117,15 +118,14 @@ struct caching::data {
       char* pointer;
       // if cache status = 0 and is cached globally
       std::vector<streaming::data::MinBase*>* waitingTasks;
-      // if cache  is streamed
-      streaming::data::MinBase* singleWaitingTask;
     };
     union {
       uint32_t size;
       // It is needed only when libuv caches for the first time.
-      bool sourceFileHasAST;
+      const bool sourceFileHasAST;
     };
     tbb::spin_mutex mutex;
+    const bool isGlobal;
   protected:
     int16_t m_packedStatusAndBusyLevel = 0;
   public:
@@ -163,7 +163,9 @@ struct caching::data {
             filenameReference.size() + 1
             )
           )
-        )
+        ),
+        sourceFileHasAST(hasASTInSourceFile),
+        isGlobal(shouldBeStreamed)
     {
       book();
     }
@@ -174,20 +176,25 @@ struct caching::fullData : caching::data {
 };
 extern uint32_t maxChunkSize;
 namespace uvWorkers {
-  class forSilentCache : public Napi::AsyncWorker {
+  class Worker : public Napi::AsyncWorker {
   public:
-    explicit forSilentCache(Napi::Env env) : Napi::AsyncWorker(env) {};
-    void Execute() override;
-    void OnOK() override;
+    explicit Worker(Napi::Env env) : Napi::AsyncWorker(env) {};
     caching::fullData* cache;
-  };
-  class forStreaming : public Napi::AsyncWorker {
-  public:
-    explicit forStreaming(Napi::Env env) : Napi::AsyncWorker(env) {};
-    void Execute() override;
+    union {
+      streaming::data::MinBase* task;
+      std::vector<streaming::data::MinBase*>* waitingTasks;
+    };
     void OnOK() override;
-    caching::data* cache;
+  };
+  class forSilentCache : public Worker {
+  public:
+    explicit forSilentCache(Napi::Env env) : Worker(env) {};
+    void Execute() override;
+  };
+  class forStreaming : public Worker {
+  public:
+    explicit forStreaming(Napi::Env env) : Worker(env) {};
+    void Execute() override;
     streaming::state* state;
-    streaming::data::MinBase* task;
   };
 }

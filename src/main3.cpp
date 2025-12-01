@@ -37,10 +37,8 @@ namespace exports {
     };
     caching::fullData* cache = new caching::fullData(str, false, info[1].As<Napi::Boolean>().Value());
     // must be even empty - sacrifice memory to reduce caching::statusMutex lock time.
-    cache->waitingTasks = new std::vector<streaming::data::MinBase*>();
-    uv_work_t* request = new uv_work_t();
-    request->data = cache;
     uvWorkers::forSilentCache* worker = new uvWorkers::forSilentCache(info.Env());
+    cache->waitingTasks = worker->waitingTasks;
     worker->Queue();
     return info.Env().Undefined();
   }
