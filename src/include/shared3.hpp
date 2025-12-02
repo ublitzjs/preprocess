@@ -101,13 +101,37 @@ namespace streaming {
   namespace data {
     class MinBase {
     public:
+      syntax* syntaxStruct;
+      Napi::Reference<Napi::Function> jsCallback;
       virtual void emitError(Napi::Env);
       virtual void mainProcessing(Napi::Env);
     };
-    class forAST : public MinBase {};
-    class Base : public MinBase {};
-    class forFS : public Base {};
-    class forJS : public Base {};
+    class forAST : public MinBase {
+      state stateStruct;
+      caching::data* cache;
+      void emitError(Napi::Env) override;
+      void mainProcessing(Napi::Env) override;
+    };
+    class Base : public MinBase {
+      class BookedCaches {
+        void* data;
+      };
+      BookedCaches bookedCaches;
+      Napi::Reference<Napi::Array> jsTemplatesList;
+      Napi::Reference<Napi::Object> jsInstructions;
+      std::stack<state> inclusions;
+    };
+    class forFS : public Base {
+      cross_os::descriptor_t output;
+      std::vector<char*> chunks;
+      void emitError(Napi::Env) override;
+      void mainProcessing(Napi::Env) override;
+    };
+    class forJS : public Base {
+      Napi::Reference<Napi::Array> chunks;
+      void emitError(Napi::Env) override;
+      void mainProcessing(Napi::Env) override;
+    };
   }
 }
 struct caching::data {
