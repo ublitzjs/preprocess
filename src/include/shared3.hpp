@@ -9,6 +9,7 @@
 #include <uv.h>
 #include "./cross_os.hpp"
 // overall ~ 7 values, so 3 bits are enough to fit it inside
+using whatever_ptr_t = char*;
 enum Status : int8_t { // < 0 - error, > 0 - good
   AST_Ready = 2,
   JustInMemory = 1,
@@ -97,6 +98,7 @@ namespace streaming {
   // state for forFS or forJS
   struct level_state : public state {
     Napi::Reference<Napi::Value> levelInstructions;
+    level_state(Napi::Value instructions) : levelInstructions(Napi::Persistent(instructions)) {}
   };
   namespace data {
     class MinBase {
@@ -107,19 +109,49 @@ namespace streaming {
       virtual void mainProcessing(Napi::Env);
     };
     class forAST : public MinBase {
+      cross_os::descriptor_t output;
       state stateStruct;
       caching::data* cache;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
+      forAST(caching::data* cache) : cache(cache){}
     };
     class Base : public MinBase {
-      class BookedCaches {
+      struct BookedCaches {
         void* data;
+        BookedCaches(uint16_t amount) 
+          :data(
+              std::aligned_alloc(
+                8, 
+                // [ptr][ptr][ptr][signed 16bits][s16 bits][s16 bits]
+                // ptr - cache, signed 16bits - usages. if -1 - no limit, hold to the function end
+                amount * 10
+              )
+            ) {}
+        inline caching::data*& getPtr(uint8_t index){
+          return *(static_cast<caching::data**>(data) + index * 8);
+        }
+        inline int16_t& getUsages(uint8_t index, uint8_t amount){
+          return *(static_cast<int16_t*>(data) +  2 * (4 * amount + index));
+        }
+        ~BookedCaches(){
+          std::free(data);
+        }
       };
       BookedCaches bookedCaches;
       Napi::Reference<Napi::Array> jsTemplatesList;
       Napi::Reference<Napi::Object> jsInstructions;
-      std::stack<state> inclusions;
+      std::stack<level_state> inclusions;
+      Base(
+          Napi::Object jsInstructionsArg,
+          Napi::Array jsTemplatesListArg,
+          caching::data* cache
+      ) : jsTemplatesList(Napi::Persistent(jsTemplatesListArg)),
+          jsInstructions(Napi::Persistent(jsInstructionsArg)),
+          bookedCaches(jsTemplatesListArg.Length())
+      {
+          inclusions.emplace<level_state>(jsTemplatesListArg);
+      }
     };
     class forFS : public Base {
       cross_os::descriptor_t output;
