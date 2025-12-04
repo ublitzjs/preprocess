@@ -3,7 +3,9 @@
 
 
 namespace exports {
-  void streamToFS(const Napi::CallbackInfo &info){}
+  void streamToFS(const Napi::CallbackInfo &info){
+    
+  }
   void streamToJS(const Napi::CallbackInfo &info){}
   void init(const Napi::CallbackInfo &info){
     maxChunkSize = info[0].As<Napi::Number>().Uint32Value();
@@ -21,6 +23,7 @@ namespace exports {
       );
     } 
   }
+  // silentCache(templatePath: string, hasASTInSource: boolean): void
   Napi::Value silentCache(const Napi::CallbackInfo &info){
     std::string str = std::move(info[0].As<Napi::String>().Utf8Value());
     auto it = caching::dataMap.find(str);
@@ -35,14 +38,49 @@ namespace exports {
       } else it->second->book();
       return info.Env().Undefined();
     };
-    caching::fullData* cache = new caching::fullData(str, false, info[1].As<Napi::Boolean>().Value());
+    caching::fullData* cache = new caching::fullData(str, info[1].As<Napi::Boolean>().Value());
     // must be even empty - sacrifice memory to reduce caching::statusMutex lock time.
     uvWorkers::forSilentCache* worker = new uvWorkers::forSilentCache(info.Env());
     cache->waitingTasks = worker->waitingTasks;
     worker->Queue();
     return info.Env().Undefined();
   }
-  void compile(const Napi::CallbackInfo &info){}
+
+  // addon.compile(templatePath: string, sourceHasAST: boolean, save: boolean, cb(errStatus?: Status)): void
+  void compile(const Napi::CallbackInfo &info){
+    streaming::data::forAST* task;
+    {
+      const std::string templateName = std::move(info[0].As<Napi::String>().Utf8Value());
+      Napi::Function cb = info[3].As<Napi::Function>();
+      task = new streaming::data::forAST(cb);
+      streaming::state& state = task->stateStruct;
+      
+      auto it = caching::dataMap.find(templateName);
+      if(it!=caching::dataMap.end()) state.initForReadyCache(it->second->size);
+      else {
+
+        if(
+            (state.descriptor = cross_os::OpenFileRead(templateName.data())) == cross_os::invalid_descriptor
+            || (state.fileSize = cross_os::GetFileSize(state.descriptor)) == cross_os::invalid_file_size
+        ){
+          cross_os::CloseDescriptor(state.descriptor);
+          delete task;
+          cb.Call({Napi::Number::New(info.Env(), Status::CantRead)});
+          return;
+        }
+        
+        bool hasASTInSource = info[1].As<Napi::Boolean>().Value();
+
+        // shouldSaveParam OR has appropriate size
+        task->cache = (info[2].As<Napi::Boolean>().Value() || state.fileSize <= maxChunkSize) 
+          ? new caching::fullData(templateName, hasASTInSource)
+          : new caching::data(templateName, hasASTInSource);
+        
+        return (new uvWorkers::forSilentCache(info.Env()))->Queue();
+      }
+    }
+    task->mainProcessing(info.Env());
+  }
   void silentClearCache(const Napi::CallbackInfo &info){
     std::string str = std::move(info[0].As<Napi::String>().Utf8Value());
     auto it = caching::dataMap.find(str);

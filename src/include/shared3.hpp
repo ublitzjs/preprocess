@@ -14,15 +14,15 @@ enum Status : int8_t { // < 0 - error, > 0 - good
   AST_Ready = 2,
   JustInMemory = 1,
   PendingDiskRead = 0,
-  CantGetSize = -1,
-  CantRead = -2,
-  CantAllocate = -3,
-  AST_Failed = -4
+  CantRead = -1,
+  CantAllocate = -2,
+  AST_Failed = -3
 };
 enum Action : uint8_t {
   JustRead = 0,
   Insert = 1,
-  Remove = 2
+  Remove = 2,
+  WaitForInit = 3
 };
 struct syntax {
   const std::regex pattern;
@@ -86,37 +86,50 @@ namespace streaming {
     uint64_t fileSize;
     uint64_t fileOffset;
     cross_os::descriptor_t descriptor = cross_os::invalid_descriptor;
-    Action action = Action::JustRead;
-    uint8_t ast_index;
+    Action action;
+    uint8_t ast_index = 0;
     // is used only when this is level_state
-    uint16_t levelInstructionIndex;
+    uint16_t levelInstructionIndex = 0;
     inline uint8_t getSyntaxPartialsSize(){
       // when I copy syntax partials to chunk beginning, I set currentPtr to where partials end, while writeablePtr should be put to the beginning.
       return currentPtr - writeablePtr;
     }
+    void initForReadyCache(uint32_t cacheSize){
+      action = Action::JustRead;
+      descriptor = cross_os::invalid_descriptor;
+      fileSize = cacheSize;
+      fileOffset = cacheSize;
+    }
+    state(cross_os::descriptor_t, caching::data*, bool cacheIsReady, uint64_t fileSize);
+    state() = default;
   };
   // state for forFS or forJS
   struct level_state : public state {
     Napi::Reference<Napi::Value> levelInstructions;
-    level_state(Napi::Value instructions) : levelInstructions(Napi::Persistent(instructions)) {}
+    level_state(Napi::Value instructions) 
+      : levelInstructions(Napi::Persistent(instructions)) {}
   };
   namespace data {
-    class MinBase {
-    public:
+    struct MinBase {
       syntax* syntaxStruct;
       Napi::Reference<Napi::Function> jsCallback;
       virtual void emitError(Napi::Env);
-      virtual void mainProcessing(Napi::Env);
+      virtual void mainProcessing(Napi::Env);  
+      virtual ~MinBase(){}
+    protected:
+      MinBase(Napi::Function fn) : jsCallback(Napi::Persistent(fn)) {}
     };
-    class forAST : public MinBase {
+    struct forAST : public MinBase {
       cross_os::descriptor_t output;
       state stateStruct;
       caching::data* cache;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
-      forAST(caching::data* cache) : cache(cache){}
+      forAST(Napi::Function cb, caching::data* cache,cross_os::descriptor_t descriptor, bool cacheIsReady, uint64_t fileSize) 
+        : MinBase(cb), cache(cache), stateStruct(descriptor, cache, cacheIsReady, fileSize) {}
+       forAST(Napi::Function cb) : MinBase(cb) {}
     };
-    class Base : public MinBase {
+    struct Base : public MinBase {
       struct BookedCaches {
         void* data;
         BookedCaches(uint16_t amount) 
@@ -142,16 +155,22 @@ namespace streaming {
       Napi::Reference<Napi::Array> jsTemplatesList;
       Napi::Reference<Napi::Object> jsInstructions;
       std::stack<level_state> inclusions;
+      void addNewLevel(cross_os::descriptor_t descriptor, caching::data* cache, bool cacheIsReady, uint64_t fileSize, Napi::Value instructions){
+        inclusions.emplace(descriptor, cache, cacheIsReady, fileSize, instructions);
+      }
+    protected:
       Base(
+          Napi::Function cb,
           Napi::Object jsInstructionsArg,
           Napi::Array jsTemplatesListArg,
           caching::data* cache
-      ) : jsTemplatesList(Napi::Persistent(jsTemplatesListArg)),
+      ) : MinBase(cb),
+          jsTemplatesList(Napi::Persistent(jsTemplatesListArg)),
           jsInstructions(Napi::Persistent(jsInstructionsArg)),
           bookedCaches(jsTemplatesListArg.Length())
       {
-          inclusions.emplace<level_state>(jsTemplatesListArg);
       }
+      virtual ~Base(){}
     };
     class forFS : public Base {
       cross_os::descriptor_t output;
@@ -211,7 +230,7 @@ struct caching::data {
       m_packedStatusAndBusyLevel |= (value << 3);
       return !value;
     }
-    data(std::string& filenameReference, bool shouldBeStreamed, bool hasASTInSourceFile)
+    data(const std::string& filenameReference, const bool hasASTInSourceFile, const bool isGlobal = false)
       : filename(
           static_cast<char*>(std::memcpy(
             new char[filenameReference.size() + 1],
@@ -221,13 +240,19 @@ struct caching::data {
           )
         ),
         sourceFileHasAST(hasASTInSourceFile),
-        isGlobal(shouldBeStreamed)
+        isGlobal(isGlobal)
     {
       book();
     }
 };
+inline streaming::state::state(cross_os::descriptor_t descriptor, caching::data* cache, bool cacheIsReady, uint64_t fileSize) 
+  : fileSize(fileSize), fileOffset(cacheIsReady?fileSize:0), descriptor(descriptor) {
+    if(cacheIsReady) currentPtr = (writeablePtr = cache->pointer), action = Action::JustRead;
+    else action = Action::WaitForInit;
+  };
 struct caching::fullData : caching::data {
-  fullData(std::string& filenameReference, bool shouldBeStreamed, bool hasASTInSourceFile) : data(filenameReference, shouldBeStreamed, hasASTInSourceFile) {}
+  fullData(const std::string& filenameReference, const bool hasASTInSourceFile) : data(filenameReference, hasASTInSourceFile, true) {}
+  void readTemplate();
   std::vector<int> AST;
 };
 extern uint32_t maxChunkSize;
@@ -245,7 +270,7 @@ namespace uvWorkers {
   class forSilentCache : public Worker {
   public:
     explicit forSilentCache(Napi::Env env) : Worker(env) {};
-    void Execute() override;
+    void Execute() override {cache->readTemplate();};
   };
   class forStreaming : public Worker {
   public:

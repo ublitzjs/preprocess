@@ -1,55 +1,55 @@
 #include "./include/shared3.hpp"
 #include <iostream>
-static void uvSetStatus(caching::data* cache, Status status){
+static inline void uvSetStatus(caching::data* cache, Status status){
   cache->mutex.lock();
   cache->setStatus(status);
   cache->book();
   cache->mutex.unlock();
 }
-void uvWorkers::forSilentCache::Execute(){
-  cross_os::descriptor_t descriptor = cross_os::OpenFileRead(cache->filename);
+void caching::fullData::readTemplate(){
+  cross_os::descriptor_t descriptor = cross_os::OpenFileRead(filename);
   if(descriptor == cross_os::invalid_descriptor){
-    return uvSetStatus(cache, Status::CantRead);
+    return uvSetStatus(this, Status::CantRead);
   }
   int64_t fileSize = cross_os::GetFileSize(descriptor);
   if(fileSize == cross_os::invalid_file_size){
     cross_os::CloseDescriptor(descriptor);
-    return uvSetStatus(cache, Status::CantGetSize);
+    return uvSetStatus(this, Status::CantGetSize);
   }
-  if(cache->sourceFileHasAST){
+  if(sourceFileHasAST){
     uint16_t astLength;
     if(cross_os::ReadFile(descriptor, &astLength, 2) == cross_os::invalid_file_size){
       cross_os::CloseDescriptor(descriptor);
-      return uvSetStatus(cache, Status::CantRead);
+      return uvSetStatus(this, Status::CantRead);
     }
     fileSize -= astLength * sizeof(int);
     if(fileSize<=0) {
       cross_os::CloseDescriptor(descriptor);
-      return uvSetStatus(cache, Status::AST_Failed);
+      return uvSetStatus(this, Status::AST_Failed);
     } 
-    cache->AST.resize(astLength);   
-    if(cross_os::ReadFile(descriptor, cache->AST.data(), astLength * sizeof(int)) == cross_os::invalid_file_size){
+    AST.resize(astLength);   
+    if(cross_os::ReadFile(descriptor, AST.data(), astLength * sizeof(int)) == cross_os::invalid_file_size){
       cross_os::CloseDescriptor(descriptor);
-      return uvSetStatus(cache, Status::CantRead);
+      return uvSetStatus(this, Status::CantRead);
     }
   } 
   char* fileData = new char[fileSize];
   if(!fileData){
     cross_os::CloseDescriptor(descriptor);
-    return uvSetStatus(cache, Status::CantAllocate);
+    return uvSetStatus(this, Status::CantAllocate);
   }
-  cache->size = fileSize;
+  size = fileSize;
   if(cross_os::ReadFile(descriptor, fileData, fileSize) == cross_os::invalid_file_size){
     delete[] fileData;
     cross_os::CloseDescriptor(descriptor);
-    return uvSetStatus(cache, Status::CantRead);
+    return uvSetStatus(this, Status::CantRead);
   }
   cross_os::CloseDescriptor(descriptor);
-  cache->mutex.lock();
-  cache->pointer = fileData;
-  cache->book();
-  cache->setStatus(Status::JustInMemory);
-  cache->mutex.unlock();
+  mutex.lock();
+  pointer = fileData;
+  book();
+  setStatus(Status::JustInMemory);
+  mutex.unlock();
 }
 void uvWorkers::forStreaming::Execute(){
   cache->mutex.lock();
