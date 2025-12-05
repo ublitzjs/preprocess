@@ -26,37 +26,37 @@ namespace exports {
   // silentCache(templatePath: string, hasASTInSource: boolean): void
   Napi::Value silentCache(const Napi::CallbackInfo &info){
     std::string str = std::move(info[0].As<Napi::String>().Utf8Value());
-    auto it = caching::dataMap.find(str);
-    if(it != caching::dataMap.end()) {
+    auto it = cache::dataMap.find(str);
+    if(it != cache::dataMap.end()) {
       it->second->mutex.lock();
       Status status = it->second->getStatus();
       if(status < 0) {
         bool isFree = it->second->getBusyLevel(); // if error in libuv
         it->second->mutex.unlock();
-        if(isFree) {delete it->second; caching::dataMap.erase(str);}
+        if(isFree) {delete it->second; cache::dataMap.erase(str);}
         return Napi::Number::New(info.Env(), status); 
       } else it->second->book();
       return info.Env().Undefined();
     };
-    caching::fullData* cache = new caching::fullData(str, info[1].As<Napi::Boolean>().Value());
+    cache* cacheStruct = new cache(str, info[1].As<Napi::Boolean>().Value(), true);
     // must be even empty - sacrifice memory to reduce caching::statusMutex lock time.
     uvWorkers::forSilentCache* worker = new uvWorkers::forSilentCache(info.Env());
-    cache->waitingTasks = worker->waitingTasks;
+    cacheStruct->waitingTasks = worker->waitingTasks;
     worker->Queue();
     return info.Env().Undefined();
   }
 
   // addon.compile(templatePath: string, sourceHasAST: boolean, save: boolean, cb(errStatus?: Status)): void
   void compile(const Napi::CallbackInfo &info){
-    streaming::data::forAST* task;
+    processing::tasks::forAST* task;
     {
       const std::string templateName = std::move(info[0].As<Napi::String>().Utf8Value());
       Napi::Function cb = info[3].As<Napi::Function>();
-      task = new streaming::data::forAST(cb);
-      streaming::state& state = task->stateStruct;
+      task = new processing::tasks::forAST(cb);
+      processing::state& state = task->stateStruct;
       
-      auto it = caching::dataMap.find(templateName);
-      if(it!=caching::dataMap.end()) state.initForReadyCache(it->second->size);
+      auto it = cache::dataMap.find(templateName);
+      if(it!=cache::dataMap.end()) state.initForReadyCache(it->second->size);
       else {
 
         if(
@@ -72,10 +72,11 @@ namespace exports {
         bool hasASTInSource = info[1].As<Napi::Boolean>().Value();
 
         // shouldSaveParam OR has appropriate size
-        task->cache = (info[2].As<Napi::Boolean>().Value() || state.fileSize <= maxChunkSize) 
-          ? new caching::fullData(templateName, hasASTInSource)
-          : new caching::data(templateName, hasASTInSource);
-        
+        task->cacheStruct = new cache(
+            templateName,
+            hasASTInSource,
+            (info[2].As<Napi::Boolean>().Value() || state.fileSize <= maxChunkSize)
+        );
         return (new uvWorkers::forSilentCache(info.Env()))->Queue();
       }
     }
@@ -83,13 +84,13 @@ namespace exports {
   }
   void silentClearCache(const Napi::CallbackInfo &info){
     std::string str = std::move(info[0].As<Napi::String>().Utf8Value());
-    auto it = caching::dataMap.find(str);
-    if(it == caching::dataMap.end()) return;
+    auto it = cache::dataMap.find(str);
+    if(it == cache::dataMap.end()) return;
     it->second->mutex.lock();
     if(!it->second->unbookAndCheckIfFree() || it->second->getStatus() == Status::PendingDiskRead)  return it->second->mutex.unlock();
     it->second->mutex.unlock();
     delete it->second;
-    caching::dataMap.erase(str);
+    cache::dataMap.erase(str);
   }
 }
 Napi::Object Init(Napi::Env env, Napi::Object exportsObj){

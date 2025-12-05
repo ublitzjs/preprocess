@@ -74,16 +74,12 @@ struct syntax {
     return nullptr;
   }
 };
-namespace caching {
-  struct data;
-  struct fullData;
-  extern std::unordered_map<std::string, data*> dataMap;
-}
-namespace streaming {
+struct cache;
+namespace processing {
   struct state {
     char* writeablePtr;
     char* currentPtr;
-    uint64_t fileSize;
+    int64_t fileSize;
     uint64_t fileOffset;
     cross_os::descriptor_t descriptor = cross_os::invalid_descriptor;
     Action action;
@@ -94,42 +90,45 @@ namespace streaming {
       // when I copy syntax partials to chunk beginning, I set currentPtr to where partials end, while writeablePtr should be put to the beginning.
       return currentPtr - writeablePtr;
     }
+    state(cross_os::descriptor_t, cache*, bool cacheIsReady, int64_t fileSize);
+    state() = default;
     void initForReadyCache(uint32_t cacheSize){
       action = Action::JustRead;
       descriptor = cross_os::invalid_descriptor;
       fileSize = cacheSize;
       fileOffset = cacheSize;
     }
-    state(cross_os::descriptor_t, caching::data*, bool cacheIsReady, uint64_t fileSize);
-    state() = default;
+    bool currentTemplateIsFinished(){
+      return fileSize<=fileOffset;
+    }
   };
-  // state for forFS or forJS
+  // state for main_base
   struct level_state : public state {
     Napi::Reference<Napi::Value> levelInstructions;
     level_state(Napi::Value instructions) 
       : levelInstructions(Napi::Persistent(instructions)) {}
   };
-  namespace data {
-    struct MinBase {
+  namespace tasks {
+    struct abstract_base {
       syntax* syntaxStruct;
       Napi::Reference<Napi::Function> jsCallback;
       virtual void emitError(Napi::Env);
       virtual void mainProcessing(Napi::Env);  
-      virtual ~MinBase(){}
+      virtual ~abstract_base(){}
     protected:
-      MinBase(Napi::Function fn) : jsCallback(Napi::Persistent(fn)) {}
+      abstract_base(Napi::Function fn) : jsCallback(Napi::Persistent(fn)) {}
     };
-    struct forAST : public MinBase {
+    struct forAST : public abstract_base {
       cross_os::descriptor_t output;
       state stateStruct;
-      caching::data* cache;
+      cache* cacheStruct;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
-      forAST(Napi::Function cb, caching::data* cache,cross_os::descriptor_t descriptor, bool cacheIsReady, uint64_t fileSize) 
-        : MinBase(cb), cache(cache), stateStruct(descriptor, cache, cacheIsReady, fileSize) {}
-       forAST(Napi::Function cb) : MinBase(cb) {}
+      forAST(Napi::Function cb, cache* cache,cross_os::descriptor_t descriptor, bool cacheIsReady, uint64_t fileSize) 
+        : abstract_base(cb), cacheStruct(cache), stateStruct(descriptor, cache, cacheIsReady, fileSize) {}
+       forAST(Napi::Function cb) : abstract_base(cb) {}
     };
-    struct Base : public MinBase {
+    struct main_base : public abstract_base {
       struct BookedCaches {
         void* data;
         BookedCaches(uint16_t amount) 
@@ -141,8 +140,8 @@ namespace streaming {
                 amount * 10
               )
             ) {}
-        inline caching::data*& getPtr(uint8_t index){
-          return *(static_cast<caching::data**>(data) + index * 8);
+        inline cache*& getPtr(uint8_t index){
+          return *(static_cast<cache**>(data) + index * 8);
         }
         inline int16_t& getUsages(uint8_t index, uint8_t amount){
           return *(static_cast<int16_t*>(data) +  2 * (4 * amount + index));
@@ -155,44 +154,44 @@ namespace streaming {
       Napi::Reference<Napi::Array> jsTemplatesList;
       Napi::Reference<Napi::Object> jsInstructions;
       std::stack<level_state> inclusions;
-      void addNewLevel(cross_os::descriptor_t descriptor, caching::data* cache, bool cacheIsReady, uint64_t fileSize, Napi::Value instructions){
-        inclusions.emplace(descriptor, cache, cacheIsReady, fileSize, instructions);
+      void addNewLevel(cross_os::descriptor_t descriptor, cache* cacheStruct, bool cacheIsReady, uint64_t fileSize, Napi::Value instructions){
+        inclusions.emplace(descriptor, cacheStruct, cacheIsReady, fileSize, instructions);
       }
     protected:
-      Base(
+      main_base(
           Napi::Function cb,
           Napi::Object jsInstructionsArg,
-          Napi::Array jsTemplatesListArg,
-          caching::data* cache
-      ) : MinBase(cb),
+          Napi::Array jsTemplatesListArg
+      ) : abstract_base(cb),
           jsTemplatesList(Napi::Persistent(jsTemplatesListArg)),
           jsInstructions(Napi::Persistent(jsInstructionsArg)),
           bookedCaches(jsTemplatesListArg.Length())
       {
       }
-      virtual ~Base(){}
+      virtual ~main_base(){}
     };
-    class forFS : public Base {
+    class forFS : public main_base {
       cross_os::descriptor_t output;
       std::vector<char*> chunks;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
     };
-    class forJS : public Base {
+    class forJS : public main_base {
       Napi::Reference<Napi::Array> chunks;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
     };
   }
 }
-struct caching::data {
+struct cache {
+  static std::unordered_map<std::string, cache*> dataMap;
   public:
     char* filename;
     union {
       // data, not accessed from libuv - thread-safe
       char* pointer;
       // if cache status = 0 and is cached globally
-      std::vector<streaming::data::MinBase*>* waitingTasks;
+      std::vector<processing::tasks::abstract_base*>* waitingTasks;
     };
     union {
       uint32_t size;
@@ -230,7 +229,7 @@ struct caching::data {
       m_packedStatusAndBusyLevel |= (value << 3);
       return !value;
     }
-    data(const std::string& filenameReference, const bool hasASTInSourceFile, const bool isGlobal = false)
+    cache(const std::string& filenameReference, const bool hasASTInSourceFile, const bool isGlobal)
       : filename(
           static_cast<char*>(std::memcpy(
             new char[filenameReference.size() + 1],
@@ -244,38 +243,41 @@ struct caching::data {
     {
       book();
     }
+  std::vector<int> AST;
+  Status /*== 2 - ok, < 0 - Status*/ readAST(int64_t& fileSize, cross_os::descriptor_t);
+  Status readTemplate(
+    int64_t& fileSize,
+    char*& fileData,
+    cross_os::descriptor_t descriptor,
+    bool firstEntry, 
+    uint8_t syntaxPartialsSize = 0
+  );
 };
-inline streaming::state::state(cross_os::descriptor_t descriptor, caching::data* cache, bool cacheIsReady, uint64_t fileSize) 
+inline processing::state::state(cross_os::descriptor_t descriptor, cache* cacheStruct, bool cacheIsReady, int64_t fileSize) 
   : fileSize(fileSize), fileOffset(cacheIsReady?fileSize:0), descriptor(descriptor) {
-    if(cacheIsReady) currentPtr = (writeablePtr = cache->pointer), action = Action::JustRead;
+    if(cacheIsReady) currentPtr = (writeablePtr = cacheStruct->pointer), action = Action::JustRead;
     else action = Action::WaitForInit;
   };
-struct caching::fullData : caching::data {
-  fullData(const std::string& filenameReference, const bool hasASTInSourceFile) : data(filenameReference, hasASTInSourceFile, true) {}
-  void readTemplate();
-  std::vector<int> AST;
-};
 extern uint32_t maxChunkSize;
 namespace uvWorkers {
   class Worker : public Napi::AsyncWorker {
   public:
     explicit Worker(Napi::Env env) : Napi::AsyncWorker(env) {};
-    caching::fullData* cache;
+    cache* cacheStruct;
     union {
-      streaming::data::MinBase* task;
-      std::vector<streaming::data::MinBase*>* waitingTasks;
+      processing::tasks::abstract_base* task;
+      std::vector<processing::tasks::abstract_base*>* waitingTasks;
     };
     void OnOK() override;
   };
   class forSilentCache : public Worker {
   public:
     explicit forSilentCache(Napi::Env env) : Worker(env) {};
-    void Execute() override {cache->readTemplate();};
-  };
-  class forStreaming : public Worker {
+    void Execute() override;  };
+  class forProcessing : public Worker {
   public:
-    explicit forStreaming(Napi::Env env) : Worker(env) {};
+    explicit forProcessing(Napi::Env env) : Worker(env) {};
     void Execute() override;
-    streaming::state* state;
+    processing::state* stateStruct;
   };
 }

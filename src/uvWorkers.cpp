@@ -1,130 +1,129 @@
 #include "./include/shared3.hpp"
-#include <iostream>
-static inline void uvSetStatus(caching::data* cache, Status status){
-  cache->mutex.lock();
-  cache->setStatus(status);
-  cache->book();
-  cache->mutex.unlock();
-}
-void caching::fullData::readTemplate(){
-  cross_os::descriptor_t descriptor = cross_os::OpenFileRead(filename);
-  if(descriptor == cross_os::invalid_descriptor){
-    return uvSetStatus(this, Status::CantRead);
-  }
-  int64_t fileSize = cross_os::GetFileSize(descriptor);
-  if(fileSize == cross_os::invalid_file_size){
-    cross_os::CloseDescriptor(descriptor);
-    return uvSetStatus(this, Status::CantGetSize);
-  }
-  if(sourceFileHasAST){
+Status cache::readAST(int64_t& fileSize, cross_os::descriptor_t descriptor){
     uint16_t astLength;
     if(cross_os::ReadFile(descriptor, &astLength, 2) == cross_os::invalid_file_size){
       cross_os::CloseDescriptor(descriptor);
-      return uvSetStatus(this, Status::CantRead);
+      return Status::CantRead;
     }
     fileSize -= astLength * sizeof(int);
     if(fileSize<=0) {
       cross_os::CloseDescriptor(descriptor);
-      return uvSetStatus(this, Status::AST_Failed);
+      return Status::AST_Failed;
     } 
-    AST.resize(astLength);   
+    AST.resize(astLength);
     if(cross_os::ReadFile(descriptor, AST.data(), astLength * sizeof(int)) == cross_os::invalid_file_size){
       cross_os::CloseDescriptor(descriptor);
-      return uvSetStatus(this, Status::CantRead);
+      return Status::CantRead;
     }
-  } 
-  char* fileData = new char[fileSize];
-  if(!fileData){
-    cross_os::CloseDescriptor(descriptor);
-    return uvSetStatus(this, Status::CantAllocate);
+    return Status::AST_Failed;
+}
+void uvWorkers::forSilentCache::Execute(){
+  int64_t fileSize;
+  char* fileData;
+  cross_os::descriptor_t descriptor;
+  if(
+      (descriptor = cross_os::OpenFileRead(cacheStruct->filename)) == cross_os::invalid_descriptor ||
+      (fileSize = cross_os::GetFileSize(descriptor)) == cross_os::invalid_file_size
+  ){
+    cacheStruct->mutex.lock();
+    cacheStruct->setStatus(Status::CantRead);
+    cacheStruct->book();
+    cacheStruct->mutex.unlock();
+    return;
   }
-  size = fileSize;
-  if(cross_os::ReadFile(descriptor, fileData, fileSize) == cross_os::invalid_file_size){
-    delete[] fileData;
-    cross_os::CloseDescriptor(descriptor);
-    return uvSetStatus(this, Status::CantRead);
-  }
+  Status result = cacheStruct->readTemplate(
+      fileSize,
+      fileData,
+      descriptor,
+      true
+  );
+  if(!result) delete[] fileData;
   cross_os::CloseDescriptor(descriptor);
-  mutex.lock();
-  pointer = fileData;
-  book();
-  setStatus(Status::JustInMemory);
-  mutex.unlock();
+  cacheStruct->mutex.lock();
+  cacheStruct->setStatus(result);
+  cacheStruct->pointer = fileData;
+  cacheStruct->mutex.unlock();
+};
+
+Status cache::readTemplate(
+    int64_t& fileSize,
+    char*& fileData,
+    cross_os::descriptor_t descriptor,
+    bool firstEntry, 
+    uint8_t syntaxPartialsSize 
+){
+  Status result = Status::JustInMemory;
+  uint32_t sizeToRead; 
+  if(firstEntry && sourceFileHasAST){
+    result = readAST(fileSize, descriptor);
+    if(result<0) return result;
+    size = (sizeToRead = std::min<uint32_t>(maxChunkSize, fileSize));
+    fileData = new char[sizeToRead];
+    if(!fileData){return Status::CantAllocate;}
+  } else {
+    fileData = pointer;
+    sizeToRead =  size - syntaxPartialsSize;
+  }
+  if(cross_os::ReadFile(descriptor, fileData, sizeToRead) == cross_os::invalid_file_size){
+    return Status::CantRead;
+  }
+  return result;
 }
-void uvWorkers::forStreaming::Execute(){
-  cache->mutex.lock();
-  bool firstEntry = !cache->getStatus();
-  cache->mutex.unlock();
+void uvWorkers::forProcessing::Execute(){
+  bool firstEntry = !cacheStruct->getStatus();
+  char* fileData = firstEntry ? nullptr : cacheStruct->pointer + stateStruct->getSyntaxPartialsSize();
 
-  uint32_t sizeToRead = firstEntry ? std::min<uint32_t>(maxChunkSize, state->fileSize) : cache->size - state->getSyntaxPartialsSize();
-  state->fileOffset+=sizeToRead;
+  Status result = cacheStruct->readTemplate(
+      stateStruct->fileSize,
+      fileData,
+      stateStruct->descriptor,
+      firstEntry, 
+      stateStruct->getSyntaxPartialsSize()
+  );
 
-  bool sourceFileHasAST = false;
-  char* fileData = cache->pointer;
+  stateStruct->fileOffset += cacheStruct->size - stateStruct->getSyntaxPartialsSize();
+
+  cacheStruct->mutex.lock();
+  cacheStruct->setStatus(result);
+  if(firstEntry && stateStruct->currentTemplateIsFinished()) cacheStruct->pointer = fileData;
+  cacheStruct->mutex.unlock();
+
+  if(stateStruct->currentTemplateIsFinished() || result < 0){
+    cross_os::CloseDescriptor(stateStruct->descriptor);
+    stateStruct->descriptor = cross_os::invalid_descriptor;
+  }
+
   if(firstEntry){
-    if(cache->sourceFileHasAST){
-      sourceFileHasAST = true;
-      uint16_t astLength;
-      if(cross_os::ReadFile(state->descriptor, &astLength, 2) == cross_os::invalid_file_size){
-        cross_os::CloseDescriptor(state->descriptor);
-        return uvSetStatus(cache, Status::CantRead);
-      }
-      state->fileSize -= astLength * sizeof(int);
-      if(state->fileSize<=0) {
-        cross_os::CloseDescriptor(state->descriptor);
-        return uvSetStatus(cache, Status::AST_Failed);
-      }
-      if(!cache->isGlobal && state->fileSize<=maxChunkSize){
-        std::cout<<"template with AST inside "<<cache->filename<<" has problematic size. Either split it or make larger for it to be shared across multiple tasks.\n";
-      }
-      caching::fullData* optimizedCache = static_cast<caching::fullData*>(cache);
-      optimizedCache->AST.resize(astLength);   
-      if(cross_os::ReadFile(state->descriptor, optimizedCache->AST.data(), astLength * sizeof(int)) == cross_os::invalid_file_size){
-        cross_os::CloseDescriptor(state->descriptor);
-        return uvSetStatus(cache, Status::CantRead);
-      }
-    } 
-    cache->size = cache->isGlobal ? state->fileSize : maxChunkSize;
-    fileData = new char[cache->size];
-    if(!fileData){
-      cross_os::CloseDescriptor(state->descriptor);
-      return uvSetStatus(cache, Status::CantAllocate);
-    }
-    state->writeablePtr = fileData;
-    state->currentPtr = fileData;
-  }
-  if(cross_os::ReadFile(state->descriptor, state->currentPtr, sizeToRead) == cross_os::invalid_file_size){
-    if(firstEntry) delete[] fileData;
-    cross_os::CloseDescriptor(state->descriptor);
-    return uvSetStatus(cache, Status::CantRead);
-  }
-  
-  if(state->fileOffset == state->fileSize){
-    cross_os::CloseDescriptor(state->descriptor);
-    state->descriptor = cross_os::invalid_descriptor;
-    if(firstEntry){
-      cache->mutex.lock();
-      cache->pointer = fileData;
-      cache->setStatus(sourceFileHasAST ? Status::AST_Ready : Status::JustInMemory);
-      cache->mutex.unlock();
-    }
+    stateStruct->writeablePtr = fileData;
+    stateStruct->currentPtr = fileData;
   }
   
 }
+
 void uvWorkers::Worker::OnOK(){
-  if(cache->isGlobal){
-    for(streaming::data::MinBase* task : *waitingTasks){
-      //check each time, because every task can mark it invalid
-      if(cache->getStatus()>0) task->mainProcessing(Env());
+  if(cacheStruct->isGlobal){
+    for(processing::tasks::abstract_base* task : *waitingTasks){
+      //check each time, because each task can mark it invalid
+      if(cacheStruct->getStatus()>0) task->mainProcessing(Env());
       else {
         task->emitError(Env());
         delete task;
       }
     }
-  } 
-  if(cache->getStatus() < 0){
-    caching::dataMap.erase(cache->filename);
-    cache->waitingTasks = nullptr;
-    delete cache;
+  } else {
+    // automatically this is forProcessing worker, because local caches are only there.
+    // + local caches means that there is single task waiting
+    processing::tasks::abstract_base* task = static_cast<uvWorkers::forProcessing*>(this)->task;
+    if(cacheStruct->getStatus()>0) task->mainProcessing(Env());
+    else {
+      task->emitError(Env());
+      delete task;
+    }
+  }
+  bool shouldBeFree = cacheStruct->unbookAndCheckIfFree();
+  if(cacheStruct->getStatus() < 0 || shouldBeFree){
+    cache::dataMap.erase(cacheStruct->filename);
+    cacheStruct->waitingTasks = nullptr;
+    delete cacheStruct;
   }
 }
