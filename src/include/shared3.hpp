@@ -91,7 +91,7 @@ namespace processing {
       return currentPtr - writeablePtr;
     }
     state(cross_os::descriptor_t, cache*, bool cacheIsReady, int64_t fileSize);
-    state() = default;
+    state() : action(Action::WaitForInit) {};
     void initForReadyCache(uint32_t cacheSize){
       action = Action::JustRead;
       descriptor = cross_os::invalid_descriptor;
@@ -105,8 +105,8 @@ namespace processing {
   // state for main_base
   struct level_state : public state {
     Napi::Reference<Napi::Value> levelInstructions;
-    level_state(Napi::Value instructions) 
-      : levelInstructions(Napi::Persistent(instructions)) {}
+    level_state(Napi::Value instructions)  
+        : levelInstructions(Napi::Persistent(instructions)) {}
   };
   namespace tasks {
     struct abstract_base {
@@ -140,10 +140,10 @@ namespace processing {
                 amount * 10
               )
             ) {}
-        inline cache*& getPtr(uint8_t index){
+        inline cache*& getPtr(uint8_t index) const {
           return *(static_cast<cache**>(data) + index * 8);
         }
-        inline int16_t& getUsages(uint8_t index, uint8_t amount){
+        inline int16_t& getUsages(uint8_t index, uint8_t amount) const {
           return *(static_cast<int16_t*>(data) +  2 * (4 * amount + index));
         }
         ~BookedCaches(){
@@ -153,10 +153,7 @@ namespace processing {
       BookedCaches bookedCaches;
       Napi::Reference<Napi::Array> jsTemplatesList;
       Napi::Reference<Napi::Object> jsInstructions;
-      std::stack<level_state> inclusions;
-      void addNewLevel(cross_os::descriptor_t descriptor, cache* cacheStruct, bool cacheIsReady, uint64_t fileSize, Napi::Value instructions){
-        inclusions.emplace(descriptor, cacheStruct, cacheIsReady, fileSize, instructions);
-      }
+      std::vector<level_state> inclusions;
     protected:
       main_base(
           Napi::Function cb,
@@ -166,17 +163,21 @@ namespace processing {
           jsTemplatesList(Napi::Persistent(jsTemplatesListArg)),
           jsInstructions(Napi::Persistent(jsInstructionsArg)),
           bookedCaches(jsTemplatesListArg.Length())
-      {
-      }
+      {}
       virtual ~main_base(){}
     };
-    class forFS : public main_base {
+    struct forFS : public main_base {
       cross_os::descriptor_t output;
-      std::vector<char*> chunks;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
+      forFS(
+          Napi::Function cb,
+          Napi::Object jsInstructionsArg,
+          Napi::Array jsTemplatesListArg
+      ) : main_base(cb, jsInstructionsArg, jsTemplatesListArg) {
+      }
     };
-    class forJS : public main_base {
+    struct forJS : public main_base {
       Napi::Reference<Napi::Array> chunks;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
@@ -242,6 +243,7 @@ struct cache {
         isGlobal(isGlobal)
     {
       book();
+      if(isGlobal) waitingTasks = new std::vector<processing::tasks::abstract_base*>();
     }
   std::vector<int> AST;
   Status /*== 2 - ok, < 0 - Status*/ readAST(int64_t& fileSize, cross_os::descriptor_t);

@@ -4,9 +4,69 @@
 
 namespace exports {
   void streamToFS(const Napi::CallbackInfo &info){
-    
+    processing::tasks::forFS* task;
+    Napi::Env env = info.Env();
+    {
+      // ( (erroredCache: [string, Status], data: null)=>void ) | ( (erroredTemplate: null, data: any)=>void ) 
+      Napi::Function cb = info[3].As<Napi::Function>();
+      task = new processing::tasks::forFS(cb, info[0].As<Napi::Object>(), info[1].As<Napi::Array>());
+      
+      //inclusions.emplace_back(descriptor, cacheStruct, cacheIsReady, fileSize, instructions);
+      Napi::Object instructions = info[0].As<Napi::Object>();
+      Napi::Array templatesList = info[1].As<Napi::Array>();
+      uint8_t index = instructions.Get("id").As<Napi::Number>().Uint32Value();
+      processing::state& stateStruct = task->inclusions.emplace_back(instructions);
+      cache*& cacheStruct = task->bookedCaches.getPtr(index);
+      {
+        //[NAME, HAS AST, USAGES]
+        Napi::Array templateDirections = templatesList.Get(index).As<Napi::Array>();
+        //templatesList.Set(index, env.Undefined());
+        task->bookedCaches.getUsages(index, templatesList.Length()) =
+          templateDirections.Has(2u) ? templatesList.Get(2u).As<Napi::Number>().Int32Value() : -1;
+        Napi::String jsTemplateName =  templateDirections.Get(0u).As<Napi::String>();
+        const std::string templateName = jsTemplateName.Utf8Value();
+        auto it = cache::dataMap.find(templateName);
+        if(it != cache::dataMap.end()){
+          stateStruct.initForReadyCache(it->second->size);
+          cacheStruct = it->second;
+        } else {
+          if(
+              (stateStruct.descriptor = cross_os::OpenFileRead(templateName.data())) == cross_os::invalid_descriptor
+              || (stateStruct.fileSize = cross_os::GetFileSize(stateStruct.descriptor)) == cross_os::invalid_file_size
+          ){
+            cross_os::CloseDescriptor(stateStruct.descriptor);
+            delete task;
+            Napi::Array message = Napi::Array::New(env, 2u);
+            message.Set(0u, jsTemplateName);
+            message.Set(1u, Napi::Number::New(env, Status::CantRead));
+            cb.Call({message});
+            return;
+          }
+          bool isGlobal = stateStruct.fileSize <= maxChunkSize;
+          cacheStruct = new cache(
+              templateName,
+              templateDirections.Has(1u) ? templateDirections.Get(1u) : false,
+              isGlobal
+              );
+          uvWorkers::forProcessing* worker = new uvWorkers::forProcessing(env);
+          worker->stateStruct = &stateStruct;
+          worker->cacheStruct = cacheStruct;
+          if(isGlobal){
+            cache::dataMap[templateName] = cacheStruct;
+            cacheStruct->waitingTasks->push_back(task);
+            worker->waitingTasks = cacheStruct->waitingTasks;
+          } else {
+            worker->task = task;
+          }
+          return worker->Queue();
+        }
+        // here cache exists and is ready, stateStruct as well
+      }
+    }
+    task->mainProcessing(env);
   }
-  void streamToJS(const Napi::CallbackInfo &info){}
+  void streamToJS(const Napi::CallbackInfo &info){
+  }
   void init(const Napi::CallbackInfo &info){
     maxChunkSize = info[0].As<Napi::Number>().Uint32Value();
     Napi::Array params = info[1].As<Napi::Array>();
@@ -77,7 +137,11 @@ namespace exports {
             hasASTInSource,
             (info[2].As<Napi::Boolean>().Value() || state.fileSize <= maxChunkSize)
         );
-        return (new uvWorkers::forSilentCache(info.Env()))->Queue();
+        task->cacheStruct->waitingTasks->push_back(task);
+        uvWorkers::forSilentCache* worker = new uvWorkers::forSilentCache(info.Env());
+        worker->cacheStruct = task->cacheStruct; 
+        worker->waitingTasks = task->cacheStruct->waitingTasks;
+        worker->Queue();
       }
     }
     task->mainProcessing(info.Env());
