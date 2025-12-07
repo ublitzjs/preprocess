@@ -189,18 +189,18 @@ namespace exports {
     (new uvWorkers::forSilentCache(info.Env(), cacheStruct, cacheStruct->waitingTasks))->Queue();
     return info.Env().Undefined();
   }
-
-  // addon.compile(templatePath: string, sourceHasAST: boolean, save: boolean, cb(errStatus?: Status)): void
+  
+  // sourceHasAST option here doesn't exist, because function itself should check temlate's validity
+  // addon.compile(templatePath: string, save: boolean, cb(errStatus?: Status), output?: string): void
   void compile(const Napi::CallbackInfo &info){
     processing::tasks::forAST* task;
     Napi::Env env = info.Env();
     {
       Napi::String jsTemplateName = info[0].As<Napi::String>();
       const std::string templateName = std::move(jsTemplateName.Utf8Value());
-      Napi::Function cb = info[3].As<Napi::Function>();
-      task = new processing::tasks::forAST(cb);
+      Napi::Function cb = info[2].As<Napi::Function>();
+      task = new processing::tasks::forAST(cb, info.Length() == 4 ? info[3].As<Napi::String>().Utf8Value() : std::string());
       processing::state& stateStruct = task->stateStruct;
-      
       auto it = cache::dataMap.find(templateName);
       if(it!=cache::dataMap.end()) {
         Status status;

@@ -71,33 +71,27 @@ Status cache::readTemplate(
 }
 void uvWorkers::forProcessing::Execute(){
   bool firstEntry = !cacheStruct->getStatus();
-  char* fileData = firstEntry ? nullptr : cacheStruct->pointer + stateStruct->getSyntaxPartialsSize();
+  uint8_t syntaxPartials = stateStruct->getSyntaxPartialsSize();
+  char* fileData = firstEntry ? nullptr : cacheStruct->pointer + (stateStruct->action == Action::WaitForInit ? 0 : syntaxPartials);
 
   Status result = cacheStruct->readTemplate(
       stateStruct->fileSize,
       fileData,
       stateStruct->descriptor,
-      firstEntry, 
-      stateStruct->getSyntaxPartialsSize()
+      syntaxPartials
   );
 
-  stateStruct->fileOffset += cacheStruct->size - stateStruct->getSyntaxPartialsSize();
+  if(fileData) stateStruct->fileOffset += cacheStruct->size - (fileData - cacheStruct->pointer);
 
   cacheStruct->mutex.lock();
   cacheStruct->setStatus(result);
-  if(firstEntry && stateStruct->currentTemplateIsFinished()) cacheStruct->pointer = fileData;
+  if(firstEntry) cacheStruct->pointer = fileData;
   cacheStruct->mutex.unlock();
 
   if(stateStruct->currentTemplateIsFinished() || result < 0){
     cross_os::CloseDescriptor(stateStruct->descriptor);
     stateStruct->descriptor = cross_os::invalid_descriptor;
   }
-
-  if(firstEntry){
-    stateStruct->writeablePtr = fileData;
-    stateStruct->currentPtr = fileData;
-  }
-  
 }
 
 void uvWorkers::Worker::OnOK(){

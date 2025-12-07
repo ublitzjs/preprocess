@@ -22,6 +22,8 @@ enum Action : uint8_t {
   JustRead = 0,
   Insert = 1,
   Remove = 2,
+  // this is an "action" where state is to be filled with cache info after acquiring it from libuv.
+  // Libuv doesn't set it to any other action by itself (because that is an overkill), but instead set in mainProcessing fn of any task
   WaitForInit = 3
 };
 struct syntax {
@@ -86,19 +88,22 @@ namespace processing {
     uint8_t ast_index = 0;
     // is used only when this is level_state
     uint16_t levelInstructionIndex = 0;
+    // this is ONE-TIME-USE function
     inline uint8_t getSyntaxPartialsSize(){
       // when I copy syntax partials to chunk beginning, I set currentPtr to where partials end, while writeablePtr should be put to the beginning.
-      return currentPtr - writeablePtr;
+      uint8_t size = currentPtr - writeablePtr;
+      currentPtr = writeablePtr;
+      return size;
     }
     state(cross_os::descriptor_t, cache*, bool cacheIsReady, int64_t fileSize);
-    state() : action(Action::WaitForInit) {};
-    void initForReadyCache(uint32_t cacheSize){
+    state() : action(Action::WaitForInit), fileOffset(0) {};
+    inline void initForReadyCache(uint32_t cacheSize){
       action = Action::JustRead;
       descriptor = cross_os::invalid_descriptor;
       fileSize = cacheSize;
       fileOffset = cacheSize;
     }
-    bool currentTemplateIsFinished(){
+    inline bool currentTemplateIsFinished(){
       return fileSize<=fileOffset;
     }
   };
@@ -119,14 +124,15 @@ namespace processing {
       abstract_base(Napi::Function fn) : jsCallback(Napi::Persistent(fn)) {}
     };
     struct forAST : public abstract_base {
-      cross_os::descriptor_t output;
       state stateStruct;
       cache* cacheStruct;
+      const std::string output;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
       forAST(Napi::Function cb, cache* cache,cross_os::descriptor_t descriptor, bool cacheIsReady, uint64_t fileSize) 
         : abstract_base(cb), cacheStruct(cache), stateStruct(descriptor, cache, cacheIsReady, fileSize) {}
-       forAST(Napi::Function cb) : abstract_base(cb) {}
+      forAST(Napi::Function cb, std::string output) : abstract_base(cb), output(std::move(output)) {}
+      void write(char* source, uint32_t amount);
     };
     struct main_base : public abstract_base {
       struct BookedCaches {
@@ -260,7 +266,6 @@ struct cache {
     int64_t& fileSize,
     char*& fileData,
     cross_os::descriptor_t descriptor,
-    bool firstEntry, 
     uint8_t syntaxPartialsSize = 0
   );
 };

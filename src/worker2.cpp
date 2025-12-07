@@ -81,7 +81,7 @@ void streaming::data::FS::threadCB(){
 //        if(!prefixPointer){
 //					uint32_t leftChunkSize = streams->chunk_size - streams->chunk_pointerMovedDistance();
 //          uint8_t maxLengthOfTemplateSyntax = streams->patternStruct->prefix.size() + streams->patternStruct->maxParamLength;
-//					if (leftChunkSize > maxLengthOfTemplateSyntax)
+//					if (leftChunkSize >= maxLengthOfTemplateSyntax)
 //            streams->write(streams->chunk_writablePointer, leftChunkSize - maxLengthOfTemplateSyntax);
 //					streams->copySyntaxPartials(maxLengthOfTemplateSyntax);
 //					break;
