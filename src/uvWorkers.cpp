@@ -3,7 +3,7 @@ Status cache::readAST(int64_t& fileSize, cross_os::descriptor_t descriptor){
     uint16_t astLength;
     if(cross_os::ReadFile(descriptor, &astLength, 2) == cross_os::invalid_file_size){
       cross_os::CloseDescriptor(descriptor);
-      return Status::CantRead;
+      return Status::CantUseFile;
     }
     fileSize -= astLength * sizeof(int);
     if(fileSize<=0) {
@@ -13,7 +13,7 @@ Status cache::readAST(int64_t& fileSize, cross_os::descriptor_t descriptor){
     AST.resize(astLength);
     if(cross_os::ReadFile(descriptor, AST.data(), astLength * sizeof(int)) == cross_os::invalid_file_size){
       cross_os::CloseDescriptor(descriptor);
-      return Status::CantRead;
+      return Status::CantUseFile;
     }
     return Status::AST_Failed;
 }
@@ -26,7 +26,7 @@ void uvWorkers::forSilentCache::Execute(){
       (fileSize = cross_os::GetFileSize(descriptor)) == cross_os::invalid_file_size
   ){
     cacheStruct->mutex.lock();
-    cacheStruct->setStatus(Status::CantRead);
+    cacheStruct->setStatus(Status::CantUseFile);
     cacheStruct->book();
     cacheStruct->mutex.unlock();
     return;
@@ -65,7 +65,7 @@ Status cache::readTemplate(
     sizeToRead =  size - syntaxPartialsSize;
   }
   if(cross_os::ReadFile(descriptor, fileData, sizeToRead) == cross_os::invalid_file_size){
-    return Status::CantRead;
+    return Status::CantUseFile;
   }
   return result;
 }

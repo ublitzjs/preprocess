@@ -14,7 +14,7 @@ enum Status : int8_t { // < 0 - error, > 0 - good
   AST_Ready = 2,
   JustInMemory = 1,
   PendingDiskRead = 0,
-  CantRead = -1,
+  CantUseFile = -1,
   CantAllocate = -2,
   AST_Failed = -3
 };
@@ -181,6 +181,15 @@ namespace processing {
       Napi::Reference<Napi::Array> chunks;
       void emitError(Napi::Env) override;
       void mainProcessing(Napi::Env) override;
+      forJS(
+          Napi::Function cb,
+          Napi::Object jsInstructionsArg,
+          Napi::Array jsTemplatesListArg,
+          Napi::Env env
+      ) 
+        : main_base(cb, jsInstructionsArg, jsTemplatesListArg), 
+        chunks(Napi::Persistent(Napi::Array::New(env, 5))) 
+      {}
     };
   }
 }
@@ -264,8 +273,8 @@ extern uint32_t maxChunkSize;
 namespace uvWorkers {
   class Worker : public Napi::AsyncWorker {
   public:
-    explicit Worker(Napi::Env env) : Napi::AsyncWorker(env) {};
     cache* cacheStruct;
+    explicit Worker(Napi::Env env, cache* cacheStruct) : Napi::AsyncWorker(env), cacheStruct(cacheStruct) {};
     union {
       processing::tasks::abstract_base* task;
       std::vector<processing::tasks::abstract_base*>* waitingTasks;
@@ -274,11 +283,15 @@ namespace uvWorkers {
   };
   class forSilentCache : public Worker {
   public:
-    explicit forSilentCache(Napi::Env env) : Worker(env) {};
-    void Execute() override;  };
+    explicit forSilentCache(Napi::Env env, cache* cacheStruct, std::vector<processing::tasks::abstract_base*>* waitingTasksArg) : Worker(env, cacheStruct) {
+      waitingTasks = waitingTasksArg;
+    };
+    void Execute() override; 
+  };
   class forProcessing : public Worker {
   public:
-    explicit forProcessing(Napi::Env env) : Worker(env) {};
+    explicit forProcessing(Napi::Env env, processing::state* stateStruct, cache* cacheStruct) 
+      : Worker(env, cacheStruct), stateStruct(stateStruct) {};
     void Execute() override;
     processing::state* stateStruct;
   };
