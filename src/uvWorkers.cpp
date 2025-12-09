@@ -49,12 +49,11 @@ Status cache::readTemplate(
     int64_t& fileSize,
     char*& fileData,
     cross_os::descriptor_t descriptor,
-    bool firstEntry, 
     uint8_t syntaxPartialsSize 
 ){
   Status result = Status::JustInMemory;
   uint32_t sizeToRead; 
-  if(firstEntry && sourceFileHasAST){
+  if(fileData && sourceFileHasAST){
     result = readAST(fileSize, descriptor);
     if(result<0) return result;
     size = (sizeToRead = std::min<uint32_t>(maxChunkSize, fileSize));
@@ -64,10 +63,7 @@ Status cache::readTemplate(
     fileData = pointer;
     sizeToRead =  size - syntaxPartialsSize;
   }
-  if(cross_os::ReadFile(descriptor, fileData, sizeToRead) == cross_os::invalid_file_size){
-    return Status::CantUseFile;
-  }
-  return result;
+  return (cross_os::ReadFile(descriptor, fileData, sizeToRead) == cross_os::invalid_file_size) ? Status::CantUseFile : result;
 }
 void uvWorkers::forProcessing::Execute(){
   bool firstEntry = !cacheStruct->getStatus();

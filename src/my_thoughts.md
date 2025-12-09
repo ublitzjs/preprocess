@@ -43,13 +43,9 @@ However it should not by itself contain a cache pointer.
 For example, if .compile is called task needs to process one single cache -> it can be stored in task directly
 
 In streamToFS or streamToJS story is a bit different.
-There is a custom array of all used and "to be used" cache pointer as well as their counter of awaiting usages.
-It actually is just one pointer of data, which looks like this: [2byte num][8byte pointer]...
-All this custom array does is provides helper methods to operate this data as if it was is structures. (alignment is pricy and #pragma packs break ARM architecture)
-Its size is stored in "second param" to streamToXX - templatesList array from js. 
-When constructing that buffer on the heap its values are zeros and null pointers. Its size == (2+8) * templatesList.Length()
-uint2 - amount for cache to definitely live before its removal/deletion. If zero from the beginning and pointer to the right is valid - cache has unlimited usage and should be removed in the end of the function. If was not zero and after some usage WAS SUPPOSED TO BECAME zero (but I leave it as a 1) - gets removed and pointer = nullptr. If that jpreviously removed cache happened to be used again (I would find "1" at the old usages), then I set usages to 0 instead of the amount passed from js.
-Each position in that buffer corresponds to position in templatesList. So each time new template recursively needs to be processed - its index is used to lookup from templatesList (number of usages and filename) and put to the same index in custom array.
+There is a custom array of all used and "to be used" cache pointers as well as their counter of future usages.
+It is built like this: (cache*  x amount of caches, 16s x amount of caches)
+This is just 8byte aligned buffer, where first cache corresponds to first 16s - signed 16bit. If 16bit == -1 -> it has no limit of usages
 
 Task contains a list of chunks to write, which are determined by AST. Also forJS task has it as a js array
 
@@ -86,3 +82,24 @@ If streaming task queues libuv:
         create std::vector on the heap, insert itself in it, save in cache->waitingTasks and in uvWorkers::forStreaming
     else:
         just save itself in uvWorkers::forStreaming without any vector
+
+### syntax partials, streamToFS
+my very first idea was to create completely parallelized template engine. Dream couldn't come true because of GC data relocation. So it is either copying js data, or going single threaded.
+When I chose single thread I thought that streamToFS will write to output on the main thread to avoid copying js data.
+But now here is third idea. Everything I write to output from js are strings. js strings are utf16, so just to access them transformation (and copying) is REQUIRED. So in fact I can afford to write data to output in libuv.
+I will save something like "custom array" from "Recursion levels" above, where I will save pointer AND booleans on the right instead of 16bit integers. These booleans will indicate whether pointer is "char*" or to "std::string*". This way I can ensure that I don't block event loop and don't copy as much data, as in option 1.
+
+maybeAsyncWrite function in tasks (only streamToFS and streamToJS) pushes pointer to data into some array (js/custom). If it "must" give it to final user / output file OR array is full (determine by length of data or amount of indeces in that array), then:
+    if streamToFS:
+        queues libuv for write and potential read
+        returns "true" to mark async execution
+        just quit from task
+    if streamToJS:
+        call callback with an array of data to js
+        as one of params give one callback, which will queue libuv for next read depending on third param of maybeAsyncWrite (if it is forced to flush data)
+        determine if js told "I have already used your data"
+        
+        return "!jsToldIfUsed" || forcedFlush to mark async execution
+        if async - just quit
+        else - continue
+

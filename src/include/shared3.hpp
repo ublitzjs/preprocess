@@ -35,7 +35,7 @@ struct syntax {
   const std::string end;
   // max among insertOn and removeOn
   const uint8_t maxParamLength;
-  const uint8_t syntaxPartialsSize;
+  const uint8_t maxInsertKeyLength;
   syntax(
       const std::string& patternString, 
       const std::string& prefix,
@@ -55,12 +55,7 @@ struct syntax {
         static_cast<uint8_t>(removeOn.length())
         })
       ),
-  syntaxPartialsSize(
-      std::max<int16_t>({
-        static_cast<uint8_t>(maxInsertKeyLength + end.size()) ,
-        static_cast<uint8_t>(prefix.size() + maxParamLength),
-        }) - 1 /*because PARTIALS*/
-      ) {}
+  maxInsertKeyLength(maxInsertKeyLength) {}
   static std::vector<syntax> dataVector;
   inline static syntax* findMatchingStruct(const std::string& patternString){
     for(syntax& syntax : dataVector){
@@ -106,6 +101,10 @@ namespace processing {
     inline bool currentTemplateIsFinished(){
       return fileSize<=fileOffset;
     }
+    void setSyntaxPartialsSize(char* initialPtr, uint8_t size){
+      writeablePtr = initialPtr;
+      currentPtr = initialPtr + size;
+    }
   };
   // state for main_base
   struct level_state : public state {
@@ -118,7 +117,7 @@ namespace processing {
       syntax* syntaxStruct;
       Napi::Reference<Napi::Function> jsCallback;
       virtual void emitError(Napi::Env);
-      virtual void mainProcessing(Napi::Env);  
+      virtual bool processAndCheckIfFinished(Napi::Env);  
       virtual ~abstract_base(){}
     protected:
       abstract_base(Napi::Function fn) : jsCallback(Napi::Persistent(fn)) {}
@@ -128,11 +127,13 @@ namespace processing {
       cache* cacheStruct;
       const std::string output;
       void emitError(Napi::Env) override;
-      void mainProcessing(Napi::Env) override;
+      //returns OK
+      bool processAndCheckIfFinished(Napi::Env) override;
       forAST(Napi::Function cb, cache* cache,cross_os::descriptor_t descriptor, bool cacheIsReady, uint64_t fileSize) 
         : abstract_base(cb), cacheStruct(cache), stateStruct(descriptor, cache, cacheIsReady, fileSize) {}
       forAST(Napi::Function cb, std::string output) : abstract_base(cb), output(std::move(output)) {}
       void write(char* source, uint32_t amount);
+      void insert(char* source, uint8_t amount);
     };
     struct main_base : public abstract_base {
       struct BookedCaches {
@@ -175,7 +176,7 @@ namespace processing {
     struct forFS : public main_base {
       cross_os::descriptor_t output;
       void emitError(Napi::Env) override;
-      void mainProcessing(Napi::Env) override;
+      bool processAndCheckIfFinished(Napi::Env) override;
       forFS(
           Napi::Function cb,
           Napi::Object jsInstructionsArg,
@@ -186,7 +187,7 @@ namespace processing {
     struct forJS : public main_base {
       Napi::Reference<Napi::Array> chunks;
       void emitError(Napi::Env) override;
-      void mainProcessing(Napi::Env) override;
+      bool processAndCheckIfFinished(Napi::Env) override;
       forJS(
           Napi::Function cb,
           Napi::Object jsInstructionsArg,
@@ -299,5 +300,12 @@ namespace uvWorkers {
       : Worker(env, cacheStruct), stateStruct(stateStruct) {};
     void Execute() override;
     processing::state* stateStruct;
+  };
+  class compiledToOutput : public Napi::AsyncWorker {
+  public:
+    processing::tasks::forAST* task;
+    explicit compiledToOutput(Napi::Env env, processing::tasks::forAST* task) : Napi::AsyncWorker(env), task(task) {};
+    void Execute() override;
+    void OnOK() override;
   };
 }

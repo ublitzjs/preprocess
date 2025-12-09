@@ -1,10 +1,6 @@
 #include "./include/shared3.hpp"
 #include <napi.h>
 
-
-
-
-
 namespace exports {
   void streamToFS(const Napi::CallbackInfo &info){
     processing::tasks::forFS* task;
@@ -92,7 +88,7 @@ namespace exports {
       }
       // here cache exists and is ready, stateStruct as well
     }
-    task->mainProcessing(env);
+    task->processAndCheckIfFinished(env);
   }
   void streamToJS(const Napi::CallbackInfo &info){
     processing::tasks::forJS* task;
@@ -151,7 +147,7 @@ namespace exports {
         // here cache exists and is ready, stateStruct as well
       }
     }
-    task->mainProcessing(env);
+    task->processAndCheckIfFinished(env);
   }
   void init(const Napi::CallbackInfo &info){
     maxChunkSize = info[0].As<Napi::Number>().Uint32Value();
@@ -251,7 +247,7 @@ namespace exports {
         )->Queue();
       }
     }
-    task->mainProcessing(info.Env());
+    if(task->processAndCheckIfFinished(info.Env())) delete task;
   }
   void silentClearCache(const Napi::CallbackInfo &info){
     std::string str = std::move(info[0].As<Napi::String>().Utf8Value());
