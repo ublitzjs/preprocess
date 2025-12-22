@@ -77,3 +77,17 @@ setTimeout(()=>{
     addon.clearCache("c.js")
   );
 }, 1000);
+
+
+addon.streamToFS(
+  {id:0, keys: {a:"txt", b: {id: 0,keys: {}}}},
+  [
+    //["a.txt",90],
+    "b.txt"
+  ],
+  "output.txt",
+  ()=>{
+
+
+  }
+);

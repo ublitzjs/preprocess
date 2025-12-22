@@ -74,15 +74,14 @@ struct syntax {
 struct cache;
 namespace processing {
   struct state {
+    int64_t leftFileSizeToRead;
+    //uint8_t ast_index = 0;
+    //uint16_t levelInstructionIndex = 0;
     char* writeablePtr;
     char* currentPtr;
-    int64_t fileSize;
-    uint64_t fileOffset;
-    cross_os::descriptor_t descriptor = cross_os::invalid_descriptor;
     Action action;
-    uint8_t ast_index = 0;
-    // is used only when this is level_state
-    uint16_t levelInstructionIndex = 0;
+    //uint64_t consumedFileOffset;
+    cross_os::descriptor_t descriptor = cross_os::invalid_descriptor;
     // this is ONE-TIME-USE function
     inline uint8_t getSyntaxPartialsSize(){
       // when I copy syntax partials to chunk beginning, I set currentPtr to where partials end, while writeablePtr should be put to the beginning.
@@ -91,15 +90,15 @@ namespace processing {
       return size;
     }
     state(cross_os::descriptor_t, cache*, bool cacheIsReady, int64_t fileSize);
-    state() : action(Action::WaitForInit), fileOffset(0) {};
+    state() : action(Action::WaitForInit) {};
     inline void initForReadyCache(uint32_t cacheSize){
       action = Action::JustRead;
       descriptor = cross_os::invalid_descriptor;
-      fileSize = cacheSize;
-      fileOffset = cacheSize;
+      leftFileSizeToRead = cacheSize;
+      consumedFileOffset = cacheSize;
     }
     inline bool currentTemplateIsFinished(){
-      return fileSize<=fileOffset;
+      return leftFileSizeToRead<=consumedFileOffset;
     }
     void setSyntaxPartialsSize(char* initialPtr, uint8_t size){
       writeablePtr = initialPtr;
@@ -107,11 +106,6 @@ namespace processing {
     }
   };
   // state for main_base
-  struct level_state : public state {
-    Napi::Reference<Napi::Value> levelInstructions;
-    level_state(Napi::Value instructions)  
-        : levelInstructions(Napi::Persistent(instructions)) {}
-  };
   namespace tasks {
     struct abstract_base {
       syntax* syntaxStruct;
@@ -201,7 +195,6 @@ namespace processing {
   }
 }
 struct cache {
-  static std::unordered_map<std::string, cache*> dataMap;
   public:
     char* filename;
     union {
@@ -271,7 +264,7 @@ struct cache {
   );
 };
 inline processing::state::state(cross_os::descriptor_t descriptor, cache* cacheStruct, bool cacheIsReady, int64_t fileSize) 
-  : fileSize(fileSize), fileOffset(cacheIsReady?fileSize:0), descriptor(descriptor) {
+  : leftFileSizeToRead(fileSize), consumedFileOffset(cacheIsReady?fileSize:0), descriptor(descriptor) {
     if(cacheIsReady) currentPtr = (writeablePtr = cacheStruct->pointer), action = Action::JustRead;
     else action = Action::WaitForInit;
   };
