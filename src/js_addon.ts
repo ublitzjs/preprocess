@@ -15,6 +15,18 @@ enum Action {
   Insert = 1,
   Remove = 2,
 };
+
+type SyntaxBaseType = {
+    prefix: string;
+    insertOn: string;
+    removeOn: string;
+    end: string;
+}
+
+type SyntaxPairType = {
+  pattern: RegExp;
+  data: Uint8Array;
+}
 const addon : {
   processCurrentChunk(
     syntax: ArrayBuffer,
@@ -42,20 +54,25 @@ const addon : {
     ArrayBuffer>
   ): void;
   createStackLevel(): ArrayBuffer;
-} = require("../build/Release/addon.node");
-const syntax: Map<RegExp, ArrayBuffer> = new Map<RegExp, ArrayBuffer>();
+  init(data: (SyntaxBaseType & {
+    pattern: RegExp
+  })[]): SyntaxPairType[];
+} = require("../build/addon.node");
+
+var syntax: SyntaxPairType[];
 const caches: Record<string, ArrayBuffer> = {}; //external ab
-syntax.set(new RegExp("\.js"), new ArrayBuffer());
-function find(sourcefile: string): ArrayBuffer {
-  var value: ArrayBuffer;
-  syntax.forEach(
-    (val, key)=>(key.test(sourcefile) ? value = val : undefined)
-  );
-  if(value!)
-    return value;
-  else 
-    throw new Error("no syntax");
+function find(sourcefile: string): Uint8Array {
+  var el: SyntaxPairType;
+  for(var i = 0; i<syntax.length; i++){
+    el = syntax[i];
+    if(el.pattern.test(sourcefile)) return el.data;
+  }
+  throw new Error("NO SYNTAX")
 }
+function init(data: (SyntaxBaseType & {pattern: RegExp})[]){
+  syntax = addon.init(data)
+}
+
 
 type InstructionsT = {
   t_id: number;

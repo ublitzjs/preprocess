@@ -11,8 +11,8 @@
     "esbuild": "^0.25.9"
   },
   "dependencies": {
-    "cmake-js": "^7.4.0",
     "@types/node": "^24.5.2",
+    "cmake-js": "^7.4.0",
     "node-addon-api": "^8.5.0",
     "node-gyp": "^11.4.2",
     "tsx": "^4.20.6",

@@ -27,66 +27,35 @@ enum Action : uint8_t {
   WaitForInit = 3
 };
 
-
-struct syntax2 {
-  const uint8_t prefixLength;
-  const uint8_t insertOnLength;
-  const uint8_t removeOnLength;
-  const uint8_t endLength;
-  const uint8_t maxParamLength;
-  const uint8_t maxInsertKeyLength;
-  const char* prefix;
-  const char* insertOn;
-  const char* removeOn;
-  const char* end;
-};
-
-
+// an array of these gets generated only once, so can be NOT std::vector
 struct syntax {
-  const std::regex pattern;
-  const std::string prefix;
-  const std::string insertOn;
-  const std::string prefixedInsertOn; // used in js worker 
-  const std::string removeOn;
-  const std::string end;
-  // max among insertOn and removeOn
+  struct sizesStruct {
+    const uint8_t prefixLength;
+    const uint8_t insertOnLength;
+    const uint8_t removeOnLength;
+    const uint8_t endLength;
+  };
+  struct pointersStruct {
+    const char* prefix;
+    const char* insertOn;
+    const char* removeOn;
+    const char* end;
+  };
+  static constexpr uint8_t fieldsAmount = 4;
+  static constexpr const char* const fields[fieldsAmount] = {"prefix", "insertOn", "removeOn", "end"};
+  union {
+    uint8_t sizesArray[fieldsAmount];
+    sizesStruct sizes;
+  };
   const uint8_t maxParamLength;
   const uint8_t maxInsertKeyLength;
-  syntax(
-      const std::string& patternString, 
-      const std::string& prefix,
-      const std::string& insertOn,
-      const std::string& removeOn,
-      const std::string& end,
-      uint8_t maxInsertKeyLength
-      ) : pattern(patternString),
-  prefix(prefix),
-  insertOn(insertOn),
-  prefixedInsertOn(prefix + insertOn),
-  removeOn(removeOn),
-  end(end),
-  maxParamLength(
-      std::max<uint8_t>({
-        static_cast<uint8_t>(insertOn.length()),
-        static_cast<uint8_t>(removeOn.length())
-        })
-      ),
-  maxInsertKeyLength(maxInsertKeyLength) {}
-  static std::vector<syntax> dataVector;
-  inline static syntax* findMatchingStruct(const std::string& patternString){
-    for(syntax& syntax : dataVector){
-      std::cmatch matches;
-      if(
-          std::regex_search(
-            patternString.data(),
-            matches,
-            syntax.pattern
-            )
-        ) return &syntax;
-    }
-    return nullptr;
-  }
+  union {
+    const char* pointersArray[fieldsAmount];
+    pointersStruct pointers;
+  };
 };
+
+
 struct cache;
 namespace processing {
   struct state {

@@ -149,25 +149,59 @@ namespace exports {
     }
     task->processAndCheckIfFinished(env);
   }
-  void init(const Napi::CallbackInfo &info){
+  
+  // init(data: {
+  // pattern: RegExp; // not used in C++, but in js
+  // prefix:string;
+  // insertOn: string;
+  // removeOn: string;
+  // end: string;
+  // maxInsertKeyLength: number;
+  // }[]): Uint8Array[]
+  Napi::Array init(const Napi::CallbackInfo &info){
     Napi::Array instructions = info[0].As<Napi::Array>();
-    for(Napi::Object obj : instructions){}
+    Napi::Env env = info.Env();
+    uint16_t dataLength;
+    std::vector<std::string> data;
+    data.reserve(instructions.Length() * syntax::fieldsAmount);
+    // figure out how much data from js was passed.
+    for(uint8_t instructionIndex = 0; instructionIndex<instructions.Length(); instructionIndex++){
+      const Napi::Object instruction = instructions.Get(instructionIndex).As<Napi::Object>();
+      for(uint8_t fieldIndex = 0; fieldIndex<syntax::fieldsAmount; fieldIndex++){
+        data[fieldIndex] = instruction.Get(syntax::fields[fieldIndex]).As<Napi::String>().Utf8Value();
+        instruction.Delete(syntax::fields[fieldIndex]);
+        dataLength += data[fieldIndex].length();
+      }
+    }
 
-
-    maxChunkSize = info[0].As<Napi::Number>().Uint32Value();
-    Napi::Array params = info[1].As<Napi::Array>();
-    syntax::dataVector.reserve(params.Length());
-    for(uint8_t i = 0; i < params.Length(); i++){
-      Napi::Object newSyntax = params[i].AsValue().As<Napi::Object>();
-      syntax::dataVector.emplace_back(
-          newSyntax.Get("pattern").As<Napi::String>().Utf8Value(),
-          newSyntax.Get("prefix").As<Napi::String>().Utf8Value(),
-          newSyntax.Get("insertOn").As<Napi::String>().Utf8Value(),
-          newSyntax.Get("removeOn").As<Napi::String>().Utf8Value(),
-          newSyntax.Get("end").As<Napi::String>().Utf8Value(),
-          newSyntax.Get("maxInsertKeyLength").As<Napi::Number>().Int32Value()
+    void* syntaxData = ::operator new(instructions.Length() * sizeof(syntax) + dataLength, std::align_val_t{alignof(syntax)});
+    char* availableDataPtr = static_cast<char*>(syntaxData) + instructions.Length() * sizeof(syntax);
+    // copy all strings, pointers, sizes to data
+    for(uint8_t instructionIndex = 0; instructionIndex<instructions.Length(); instructionIndex++){
+      syntax& currentSyntax = *(static_cast<syntax*>(syntaxData) + instructionIndex * sizeof(syntax));
+      instructions.Get(instructionIndex).As<Napi::Object>().Set(
+        "data", 
+        Napi::Uint8Array::New(
+          env,
+          4,
+          Napi::ArrayBuffer::New(
+            env,
+            &currentSyntax,
+            syntax::fieldsAmount
+            ),
+          0
+        )
       );
-    } 
+      for(uint8_t fieldIndex = 0; fieldIndex<syntax::fieldsAmount; fieldIndex++){
+        std::string& currentStr = data[instructionIndex * syntax::fieldsAmount + fieldIndex];
+        currentSyntax.sizesArray[fieldIndex] = currentStr.length();
+        currentSyntax.pointersArray[fieldIndex] = availableDataPtr;
+        std::memcpy(availableDataPtr, currentStr.data(), currentStr.length());
+        availableDataPtr+=currentStr.length();
+        currentStr.clear();
+      }
+    }
+    return instructions;
   }
   // silentCache(templatePath: string, hasASTInSource: boolean): void
   Napi::Value silentCache(const Napi::CallbackInfo &info){
