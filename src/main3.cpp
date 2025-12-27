@@ -1,4 +1,4 @@
-#include "./include/shared3.hpp"
+#include "shared3.hpp"
 #include <napi.h>
 
 namespace exports {

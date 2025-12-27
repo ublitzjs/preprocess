@@ -1,4 +1,4 @@
-#include "./include/shared3.hpp"
+#include "shared3.hpp"
 Status cache::readAST(int64_t& fileSize, cross_os::descriptor_t descriptor){
     uint16_t astLength;
     if(cross_os::ReadFile(descriptor, &astLength, 2) == cross_os::invalid_file_size){

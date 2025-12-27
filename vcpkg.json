@@ -1,5 +1,6 @@
 {
   "dependencies": [
-    "tbb"
+    "tbb",
+    "libuv"
   ]
 }
