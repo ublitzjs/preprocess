@@ -1,4 +1,3 @@
-x64
 node_modules
-preprocess
 build
+.cache

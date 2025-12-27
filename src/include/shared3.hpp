@@ -26,6 +26,22 @@ enum Action : uint8_t {
   // Libuv doesn't set it to any other action by itself (because that is an overkill), but instead set in mainProcessing fn of any task
   WaitForInit = 3
 };
+
+
+struct syntax2 {
+  const uint8_t prefixLength;
+  const uint8_t insertOnLength;
+  const uint8_t removeOnLength;
+  const uint8_t endLength;
+  const uint8_t maxParamLength;
+  const uint8_t maxInsertKeyLength;
+  const char* prefix;
+  const char* insertOn;
+  const char* removeOn;
+  const char* end;
+};
+
+
 struct syntax {
   const std::regex pattern;
   const std::string prefix;

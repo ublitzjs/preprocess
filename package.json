@@ -1,12 +1,17 @@
 {
+  "name": "@ublitzjs/preprocess",
+  "binary": {
+    "napi_versions": [9]
+  },
   "type": "module",
   "scripts": {
-    "build": "node-gyp build"
+    "compile": "cmake-js compile -G Ninja --CDCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
   },
   "devDependencies": {
     "esbuild": "^0.25.9"
   },
   "dependencies": {
+    "cmake-js": "^7.4.0",
     "@types/node": "^24.5.2",
     "node-addon-api": "^8.5.0",
     "node-gyp": "^11.4.2",

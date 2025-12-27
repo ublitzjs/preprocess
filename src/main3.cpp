@@ -150,6 +150,10 @@ namespace exports {
     task->processAndCheckIfFinished(env);
   }
   void init(const Napi::CallbackInfo &info){
+    Napi::Array instructions = info[0].As<Napi::Array>();
+    for(Napi::Object obj : instructions){}
+
+
     maxChunkSize = info[0].As<Napi::Number>().Uint32Value();
     Napi::Array params = info[1].As<Napi::Array>();
     syntax::dataVector.reserve(params.Length());
