@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#if PLATFORM_APPROACH == 0
+#ifdef WIN32
 #include <Windows.h>
 namespace cross_os {
   using descriptor_t = HANDLE;
@@ -8,6 +8,7 @@ namespace cross_os {
   inline descriptor_t OpenFileRead(const char* str) {
     return CreateFile(str,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
   }
+  
   inline descriptor_t OpenFileWrite(const char* str){
     return CreateFile(str, GENERIC_WRITE, FILE_SHARE_WRITE,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
   }
@@ -16,8 +17,8 @@ namespace cross_os {
   }
   constexpr int8_t invalid_file_size = -1;
   inline int64_t GetFileSize(descriptor_t descriptor){
-    uint64_t fileSize = ::GetFileSize(descriptor, NULL);
-    if (fileSize == INVALID_FILE_SIZE && GetLastError() != NO_ERROR){
+    int64_t fileSize = ::GetFileSize(descriptor, NULL);
+    if (fileSize == INVALID_FILE_SIZE){
       return -1;
     };
     return fileSize; 
@@ -66,3 +67,47 @@ namespace cross_os {
 #else 
 #include <fstream>
 #endif
+
+
+
+
+void unmapMyFile(void* addr)
+{
+    UnmapViewOfFile(addr);
+    CloseHandle(mappingDescriptor);
+    CloseHandle(fileDecsriptor);
+}
+
+ 
+inline void* mapMyFile(cross_os::descriptor_t input, int64_t fileSize)
+{
+  cross_os::descriptor_t mapping = CreateFileMappingA(
+      input,
+      nullptr,
+      PAGE_READONLY,
+      0,
+      0,
+      nullptr
+      );
+
+  if (!mapping) {
+    cross_os::CloseDescriptor(input);
+    return nullptr;
+  }
+
+  void* view = MapViewOfFile(
+      mapping,
+      FILE_MAP_READ,
+      0,
+      0,
+      0
+      );
+
+  if (!view) {
+    cross_os::CloseDescriptor(mapping);
+    cross_os::CloseDescriptor(input);
+    return nullptr;
+  }
+
+  return view;
+}

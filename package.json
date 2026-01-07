@@ -5,7 +5,7 @@
   },
   "type": "module",
   "scripts": {
-    "compile": "cmake-js compile -G Ninja --CDCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+    "compile": "cmake-js configure -G Ninja --CDCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
   },
   "devDependencies": {
     "esbuild": "^0.25.9"
