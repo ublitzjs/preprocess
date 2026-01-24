@@ -1,4 +1,2 @@
 node_modules
-__cmake*
-build
-.cache
+bun.lock
